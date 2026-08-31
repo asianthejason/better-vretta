@@ -1,10 +1,19 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
+import { requireAccountRole } from "@/lib/roleGuard";
+import {
+  gradeDragDrop,
+  normalizeDragDropData,
+  type DragDropData,
+  type DragDropPlacements,
+} from "@/lib/dragDrop";
 
 type QuestionType =
   | "multiple-choice"
+  | "drag-and-drop"
   | "short-answer"
   | "fill-in-the-blank"
   | "image-question"
@@ -63,6 +72,7 @@ type Assessment = {
   id: string;
   title: string;
   assessment_code: string;
+  classroom_id: string | null;
 };
 
 type Question = {
@@ -85,6 +95,7 @@ type Question = {
     sortingItems?: SortingItem[];
     sortingCategories?: SortingCategory[];
     correctOrder?: string[];
+    dragDrop?: DragDropData;
   };
   question_order: number;
 };
@@ -107,6 +118,7 @@ type StudentAnswer = {
     correctOrder?: string[];
     categoryAssignments?: Record<string, string>;
     categoryResults?: Record<string, boolean>;
+    placements?: DragDropPlacements;
   };
   is_correct: boolean | null;
   questions: {
@@ -129,6 +141,7 @@ type StudentAnswer = {
       sortingItems?: SortingItem[];
       sortingCategories?: SortingCategory[];
       correctOrder?: string[];
+      dragDrop?: DragDropData;
     };
   } | null;
 };
@@ -136,13 +149,33 @@ type StudentAnswer = {
 type StudentAttempt = {
   id: string;
   assessment_id: string;
+  student_id: string | null;
   student_name: string;
   score: number | null;
   submitted_at: string;
 };
 
+type AssessmentSession = {
+  student_id: string;
+  first_opened_at: string;
+  active_seconds: number;
+  kick_count: number;
+};
+
 function normalizeAnswer(answer: string | undefined) {
   return (answer || "").trim().toLowerCase();
+}
+
+function displayMultipleChoiceAnswer(answer: string | undefined) {
+  if (!answer) return "No answer";
+  const imageChoiceMatch = answer.match(/^__image_choice_(\d+)__$/);
+  if (imageChoiceMatch) {
+    return `Choice ${String.fromCharCode(64 + Number(imageChoiceMatch[1]))} (image)`;
+  }
+  const tableChoiceMatch = answer.match(/^__table_choice_(\d+)__$/);
+  return tableChoiceMatch
+    ? `Row ${String.fromCharCode(64 + Number(tableChoiceMatch[1]))}`
+    : answer;
 }
 
 function getSortingItemDisplayLabel(item: SortingItem | undefined, fallback = "Item") {
@@ -166,6 +199,8 @@ export default function ResultsPage({
   const [assessment, setAssessment] = useState<Assessment | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [attempts, setAttempts] = useState<StudentAttempt[]>([]);
+  const [sessionsByStudent, setSessionsByStudent] = useState<Record<string, AssessmentSession>>({});
+  const [assignedStudentIds, setAssignedStudentIds] = useState<string[]>([]);
   const [answersByAttempt, setAnswersByAttempt] = useState<
     Record<string, StudentAnswer[]>
   >({});
@@ -186,18 +221,12 @@ export default function ResultsPage({
   }, [params]);
 
   async function loadResults(id: string) {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      window.location.href = "/login";
-      return;
-    }
+    const user = await requireAccountRole("teacher");
+    if (!user) return;
 
     const { data: assessmentData, error: assessmentError } = await supabase
       .from("assessments")
-      .select("id, title, assessment_code")
+      .select("id, title, assessment_code, classroom_id")
       .eq("id", id)
       .single();
 
@@ -207,10 +236,26 @@ export default function ResultsPage({
       return;
     }
 
+    if (assessmentData.classroom_id) {
+      const { data: rosterData, error: rosterError } = await supabase
+        .from("classroom_students")
+        .select("student_id")
+        .eq("classroom_id", assessmentData.classroom_id);
+      if (rosterError) {
+        alert(`The classroom roster could not be loaded: ${rosterError.message}`);
+        setLoading(false);
+        return;
+      }
+      setAssignedStudentIds((rosterData || []).map((student) => student.student_id));
+    } else {
+      setAssignedStudentIds([]);
+    }
+
     const { data: questionData, error: questionError } = await supabase
       .from("questions")
       .select("*")
       .eq("assessment_id", id)
+      .in("question_type", ["multiple-choice", "drag-and-drop"])
       .order("question_order", { ascending: true });
 
     if (questionError) {
@@ -227,6 +272,17 @@ export default function ResultsPage({
 
     if (attemptError) {
       alert(attemptError.message);
+      setLoading(false);
+      return;
+    }
+
+    const { data: sessionData, error: sessionError } = await supabase
+      .from("assessment_sessions")
+      .select("student_id,first_opened_at,active_seconds,kick_count")
+      .eq("assessment_id", id);
+
+    if (sessionError) {
+      alert(`Session tracking could not be loaded: ${sessionError.message}`);
       setLoading(false);
       return;
     }
@@ -288,6 +344,12 @@ export default function ResultsPage({
     setAssessment(assessmentData);
     setQuestions((questionData || []) as Question[]);
     setAttempts(attemptData || []);
+    setSessionsByStudent(
+      (sessionData || []).reduce((sessions: Record<string, AssessmentSession>, session) => {
+        sessions[session.student_id] = session;
+        return sessions;
+      }, {})
+    );
     setAnswersByAttempt(groupedAnswers);
     setLoading(false);
   }
@@ -300,6 +362,16 @@ export default function ResultsPage({
       hour: "numeric",
       minute: "2-digit",
     });
+  }
+
+  function formatActiveMinutes(seconds: number | undefined) {
+    if (!seconds) return "0.0 min";
+    return `${(seconds / 60).toFixed(1)} min`;
+  }
+
+  async function signOut() {
+    await supabase.auth.signOut();
+    window.location.href = "/";
   }
 
   function questionIsScored(question: Question | StudentAnswer["questions"]) {
@@ -331,6 +403,13 @@ export default function ResultsPage({
 
     if (question.question_type === "multiple-choice") {
       return answer.answer_data.answer === question.question_data.correctAnswer;
+    }
+
+    if (question.question_type === "drag-and-drop") {
+      return gradeDragDrop(
+        normalizeDragDropData(question.question_data.dragDrop),
+        answer.answer_data.placements || {}
+      ).isCorrect;
     }
 
     if (question.question_type === "short-answer") {
@@ -492,6 +571,14 @@ export default function ResultsPage({
     if (question.question_type === "multiple-choice") {
       return {
         answer: "",
+        missing: true,
+      };
+    }
+
+
+    if (question.question_type === "drag-and-drop") {
+      return {
+        placements: {},
         missing: true,
       };
     }
@@ -772,22 +859,63 @@ export default function ResultsPage({
   }
 
   const scoredQuestionCount = getScoredQuestionCount();
+  const assignedStudentSet = new Set(assignedStudentIds);
+  const completedStudentCount = new Set(
+    attempts
+      .map((attempt) => attempt.student_id)
+      .filter(
+        (studentId): studentId is string =>
+          Boolean(studentId) && assignedStudentSet.has(studentId as string)
+      )
+  ).size;
+  const scoredAttempts = attempts.filter((attempt) => attempt.score !== null);
+  const classAverage = scoredAttempts.length && scoredQuestionCount
+    ? Math.round(
+        (scoredAttempts.reduce((total, attempt) => total + (attempt.score || 0), 0) /
+          scoredAttempts.length /
+          scoredQuestionCount) *
+          100
+      )
+    : null;
 
   return (
-    <main className="min-h-screen bg-slate-950 px-6 py-10 text-white">
+    <>
+      <nav className="border-b border-slate-200 bg-white text-slate-900" aria-label="Global navigation">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+          <Link href="/" className="flex items-center gap-3 font-bold tracking-tight text-slate-950">
+            <span className="grid size-9 place-items-center rounded-xl bg-blue-600 text-white shadow-sm shadow-blue-200">J</span>
+            Jretta
+          </Link>
+          <div className="flex items-center gap-2">
+            <Link href="/teacher" className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950">Dashboard</Link>
+            <Link href="/teacher/classrooms" className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950">Classrooms</Link>
+            <Link href="/profile" className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950">Profile</Link>
+            <button type="button" onClick={() => void signOut()} className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950">Sign Out</button>
+          </div>
+        </div>
+      </nav>
+      <main className="min-h-screen bg-slate-950 px-6 py-10 text-white">
       <div className="mx-auto max-w-6xl">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <a
-            href={`/teacher/assessments/${assessmentId}`}
-            className="text-sm text-blue-300 hover:underline"
-          >
-            ← Back to Assessment Editor
-          </a>
+        <section className="overflow-hidden rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-900 to-slate-900/80 shadow-2xl shadow-black/20">
+          <div className="flex flex-col gap-6 border-b border-slate-800 px-6 py-6 sm:flex-row sm:items-start sm:justify-between lg:px-8">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="rounded-full bg-blue-500/10 px-3 py-1 text-xs font-bold uppercase tracking-wider text-blue-300 ring-1 ring-inset ring-blue-400/20">
+                  Assessment results
+                </span>
+                <span className="font-mono text-xs font-bold tracking-widest text-slate-400">
+                  {assessment.assessment_code}
+                </span>
+              </div>
+              <h1 className="mt-4 truncate text-3xl font-bold tracking-tight text-white sm:text-4xl">
+                {assessment.title}
+              </h1>
+            </div>
 
-          <div className="flex flex-wrap gap-3">
+            <div className="flex shrink-0 flex-wrap gap-2">
             <button
               onClick={() => loadResults(assessmentId)}
-              className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold hover:bg-slate-800"
+              className="rounded-xl border border-slate-700 bg-slate-950/40 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:border-slate-600 hover:bg-slate-800"
             >
               Refresh Results
             </button>
@@ -795,34 +923,31 @@ export default function ResultsPage({
             <button
               onClick={regradeResults}
               disabled={regrading}
-              className="rounded-xl border border-green-700 px-4 py-2 text-sm font-semibold text-green-300 hover:bg-green-950 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {regrading ? "Regrading..." : "Regrade Results"}
             </button>
+            </div>
           </div>
-        </div>
-
-        <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900 p-6">
-          <p className="text-sm text-slate-400">
-            Student Code:{" "}
-            <span className="font-mono text-blue-300">
-              {assessment.assessment_code}
-            </span>
-          </p>
-
-          <h1 className="mt-3 text-4xl font-bold">{assessment.title}</h1>
-
-          <p className="mt-4 text-slate-300">
-            Total submissions: {attempts.length}
-          </p>
-
-          <p className="mt-1 text-slate-400">
-            Current number of questions: {questions.length}
-          </p>
-
-          <p className="mt-1 text-slate-400">
-            Scored questions: {scoredQuestionCount}
-          </p>
+          <div className="grid divide-y divide-slate-800 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+            <div className="px-5 py-5 lg:px-8">
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Completed</p>
+              <p className="mt-2 text-2xl font-bold text-white">
+                {completedStudentCount} <span className="text-base font-semibold text-slate-500">/ {assignedStudentIds.length}</span>
+              </p>
+              <p className="mt-1 text-xs text-slate-500">assigned students</p>
+            </div>
+            <div className="px-5 py-5 lg:px-8">
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Class average</p>
+              <p className="mt-2 text-2xl font-bold text-blue-300">{classAverage === null ? "—" : `${classAverage}%`}</p>
+              <p className="mt-1 text-xs text-slate-500">across submissions</p>
+            </div>
+            <div className="px-5 py-5 lg:px-8">
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Submissions</p>
+              <p className="mt-2 text-2xl font-bold text-white">{attempts.length}</p>
+              <p className="mt-1 text-xs text-slate-500">total attempts</p>
+            </div>
+          </div>
         </section>
 
         <section className="mt-8">
@@ -833,10 +958,13 @@ export default function ResultsPage({
               No students have submitted this assessment yet.
             </p>
           ) : (
-            <div className="mt-4 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900">
-              <div className="hidden grid-cols-[1.4fr_1.2fr_100px_150px] gap-4 border-b border-slate-800 bg-slate-950/60 px-5 py-3 text-sm font-semibold text-slate-400 md:grid">
+            <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900">
+              <div className="hidden min-w-[1100px] grid-cols-[1.3fr_1.1fr_1.1fr_100px_100px_90px_140px] gap-4 border-b border-slate-800 bg-slate-950/60 px-5 py-3 text-sm font-semibold text-slate-400 md:grid">
                 <div>Student</div>
+                <div>First opened</div>
                 <div>Submitted</div>
+                <div>Active time</div>
+                <div>Kicked out</div>
                 <div className="text-right">Score</div>
                 <div className="text-right">Details</div>
               </div>
@@ -844,13 +972,14 @@ export default function ResultsPage({
               {attempts.map((attempt) => {
                 const answers = answersByAttempt[attempt.id] || [];
                 const isExpanded = expandedAttemptId === attempt.id;
+                const session = attempt.student_id ? sessionsByStudent[attempt.student_id] : undefined;
 
                 return (
                   <div
                     key={attempt.id}
                     className="border-b border-slate-800 last:border-b-0"
                   >
-                    <div className="grid gap-3 px-5 py-4 md:grid-cols-[1.4fr_1.2fr_100px_150px] md:items-center md:gap-4">
+                    <div className="grid gap-3 px-5 py-4 md:min-w-[1100px] md:grid-cols-[1.3fr_1.1fr_1.1fr_100px_100px_90px_140px] md:items-center md:gap-4">
                       <div>
                         <p className="font-semibold text-white">
                           {attempt.student_name}
@@ -864,7 +993,19 @@ export default function ResultsPage({
                       </div>
 
                       <p className="text-sm text-slate-400">
+                        {session ? formatDate(session.first_opened_at) : "Not recorded"}
+                      </p>
+
+                      <p className="text-sm text-slate-400">
                         {formatDate(attempt.submitted_at)}
+                      </p>
+
+                      <p className="text-sm font-medium text-slate-300">
+                        {formatActiveMinutes(session?.active_seconds)}
+                      </p>
+
+                      <p className={`text-sm font-semibold ${session?.kick_count ? "text-red-300" : "text-slate-300"}`}>
+                        {session?.kick_count || 0}
                       </p>
 
                       <p className="font-semibold text-blue-300 md:text-right">
@@ -903,6 +1044,8 @@ export default function ResultsPage({
                                 Question {index + 1} ·{" "}
                                 {question?.question_type === "multiple-choice"
                                   ? "Multiple Choice"
+                                  : question?.question_type === "drag-and-drop"
+                                  ? "Drag & Drop"
                                   : question?.question_type === "short-answer"
                                   ? "Short Answer"
                                   : question?.question_type ===
@@ -922,6 +1065,23 @@ export default function ResultsPage({
                               <h4 className="mt-2 font-semibold">
                                 {question?.prompt}
                               </h4>
+
+                              {question?.question_type === "drag-and-drop" && (() => {
+                                const data = normalizeDragDropData(question.question_data.dragDrop);
+                                const placements = answer.answer_data.placements || {};
+                                return (
+                                  <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                                    {data.zones.map((zone) => (
+                                      <div key={zone.id} className="rounded-lg border border-slate-700 bg-slate-900 p-3">
+                                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{zone.label}</p>
+                                        <p className="mt-1 text-sm text-slate-200">
+                                          {(placements[zone.id] || []).map((itemId) => data.items.find((item) => item.id === itemId)?.content || "Unknown item").join(", ") || "No response"}
+                                        </p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                );
+                              })()}
 
                               {answer.answer_data.missing && (
                                 <p className="mt-3 rounded-xl border border-yellow-800 bg-yellow-950/40 p-3 font-semibold text-yellow-200">
@@ -1353,14 +1513,14 @@ export default function ResultsPage({
                                   <p className="mt-3 text-slate-300">
                                     Student answer:{" "}
                                     <span className="font-semibold">
-                                      {answer.answer_data.answer || "No answer"}
+                                      {displayMultipleChoiceAnswer(answer.answer_data.answer)}
                                     </span>
                                   </p>
 
                                   <p className="mt-1 text-slate-300">
                                     Current correct answer:{" "}
                                     <span className="font-semibold">
-                                      {question.question_data.correctAnswer}
+                                      {displayMultipleChoiceAnswer(question.question_data.correctAnswer)}
                                     </span>
                                   </p>
                                 </>
@@ -1509,6 +1669,7 @@ export default function ResultsPage({
           )}
         </section>
       </div>
-    </main>
+      </main>
+    </>
   );
 }
