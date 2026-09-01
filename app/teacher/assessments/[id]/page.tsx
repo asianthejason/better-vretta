@@ -98,6 +98,18 @@ type Assessment = {
   is_published: boolean;
 };
 
+type ReferenceBuild = {
+  id: string;
+  owner_id: string;
+  name: string;
+  title: string;
+  top_content: string;
+  content: string;
+  image_url: string;
+  image_path: string;
+  table_data: LeftPanelTable;
+};
+
 type Question = {
   id: string;
   assessment_id: string;
@@ -357,18 +369,18 @@ function SavedQuestionStudentPreview({
           const data = normalizeDragDropData(question.question_data.dragDrop);
           return (
             <div className="mt-6 space-y-4">
-              <div className="flex flex-wrap gap-2">
+              <div className={`flex flex-wrap gap-3 ${data.preset === "categories" ? "justify-center" : ""}`}>
                 {data.items.map((item) => (
-                  <div key={item.id} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium shadow-sm">
+                  <div key={item.id} className={`${data.preset === "categories" ? "min-w-28 rounded-none border-slate-500 px-4 py-2 text-center font-serif font-semibold" : "rounded-lg border-slate-300 px-3 py-2 text-sm font-medium shadow-sm"} border bg-white text-slate-900`}>
                     {item.imageUrl && <img src={item.imageUrl} alt="" className="mb-2 h-16 max-w-28 object-contain" />}
                     {item.content}
                   </div>
                 ))}
               </div>
-              <div className={`grid gap-3 ${data.preset === "categories" ? "sm:grid-cols-2" : ""}`}>
+              <div className={`grid ${data.preset === "categories" ? "gap-2 sm:grid-cols-2" : "gap-3"}`}>
                 {data.zones.map((zone, zoneIndex) => (
-                  <div key={zone.id} className="min-h-20 rounded-xl border-2 border-dashed border-blue-200 bg-blue-50/40 p-3">
-                    <span className="text-sm font-semibold text-blue-800">{zone.label || `Position ${zoneIndex + 1}`}</span>
+                  <div key={zone.id} className={`${data.preset === "categories" ? "min-h-40 rounded-none border border-slate-500 bg-white" : "min-h-20 rounded-xl border-2 border-dashed border-blue-200 bg-blue-50/40 p-3"}`}>
+                    <div className={`${data.preset === "categories" ? "border-b border-slate-500 px-3 py-2 text-center font-serif font-semibold text-slate-900" : "text-sm font-semibold text-blue-800"}`}>{zone.label || `Position ${zoneIndex + 1}`}</div>
                   </div>
                 ))}
               </div>
@@ -443,6 +455,8 @@ export default function AssessmentEditorPage({
   const [questionType, setQuestionType] =
     useState<QuestionType>("multiple-choice");
   const [dragDropData, setDragDropData] = useState<DragDropData>(() => createDefaultDragDropData());
+  const [selectedDragDropItemFiles, setSelectedDragDropItemFiles] = useState<Record<string, File>>({});
+  const [dragDropItemPreviewUrls, setDragDropItemPreviewUrls] = useState<Record<string, string>>({});
 
   const [prompt, setPrompt] = useState("");
   const [promptHtml, setPromptHtml] = useState("");
@@ -457,6 +471,10 @@ export default function AssessmentEditorPage({
   const [existingLeftPanelImagePath, setExistingLeftPanelImagePath] = useState("");
   const [leftPanelImagePreviewUrl, setLeftPanelImagePreviewUrl] = useState("");
   const [showUploadedImagePicker, setShowUploadedImagePicker] = useState(false);
+  const [selectedReferenceQuestionId, setSelectedReferenceQuestionId] = useState("");
+  const [referenceBuilds, setReferenceBuilds] = useState<ReferenceBuild[]>([]);
+  const [referenceBuildName, setReferenceBuildName] = useState("");
+  const [savingReferenceBuild, setSavingReferenceBuild] = useState(false);
   const [leftPanelTableEnabled, setLeftPanelTableEnabled] = useState(false);
   const [leftPanelTableHasBorder, setLeftPanelTableHasBorder] = useState(true);
   const [leftPanelTableCells, setLeftPanelTableCells] = useState<string[][]>([
@@ -582,6 +600,9 @@ export default function AssessmentEditorPage({
       );
       question.question_data.sortingItems?.forEach((item, itemIndex) =>
         addImage(item.imageUrl, item.imagePath, `${label} · Sorting item ${itemIndex + 1}`)
+      );
+      question.question_data.dragDrop?.items?.forEach((item, itemIndex) =>
+        addImage(item.imageUrl, item.imagePath, `${label} · Drag item ${itemIndex + 1}`)
       );
       question.question_data.draggableImageChoices?.forEach((choice) =>
         addImage(choice.imageUrl, choice.imagePath, `${label} · ${choice.label}`)
@@ -715,9 +736,19 @@ export default function AssessmentEditorPage({
       return;
     }
 
+    const { data: referenceData, error: referenceError } = await supabase
+      .from("reference_builds")
+      .select("*")
+      .order("name", { ascending: true });
+
+    if (referenceError) {
+      console.error("Could not load reference library:", referenceError.message);
+    }
+
     setAssessment(assessmentData);
     setTitleDraft(assessmentData.title);
     setQuestions((questionData || []) as Question[]);
+    setReferenceBuilds((referenceData || []) as ReferenceBuild[]);
     setLoading(false);
   }
 
@@ -776,6 +807,8 @@ export default function AssessmentEditorPage({
   function resetQuestionForm() {
     setQuestionType("multiple-choice");
     setDragDropData(createDefaultDragDropData());
+    setSelectedDragDropItemFiles({});
+    setDragDropItemPreviewUrls({});
     setPrompt("");
     setPromptHtml("");
     setQuestionLayout("standard");
@@ -787,6 +820,8 @@ export default function AssessmentEditorPage({
     setExistingLeftPanelImagePath("");
     setLeftPanelImagePreviewUrl("");
     setShowUploadedImagePicker(false);
+    setSelectedReferenceQuestionId("");
+    setReferenceBuildName("");
     setLeftPanelTableEnabled(false);
     setLeftPanelTableHasBorder(true);
     setLeftPanelTableCells([["", ""], ["", ""]]);
@@ -1067,17 +1102,12 @@ export default function AssessmentEditorPage({
     }
 
     if (questionType === "drag-and-drop") {
-      if (dragDropData.items.length < 1 || dragDropData.items.some((item) => !item.content.trim() && !item.imageUrl)) {
+      if (dragDropData.items.length < 1 || dragDropData.items.some((item) => !item.content.trim() && !item.imageUrl && !selectedDragDropItemFiles[item.id])) {
         alert("Add at least one complete draggable item.");
         return false;
       }
       if (dragDropData.zones.length < 1 || dragDropData.zones.some((zone) => !zone.label.trim())) {
         alert("Add and name at least one drop target.");
-        return false;
-      }
-      const assigned = dragDropData.zones.flatMap((zone) => zone.correctItemIds);
-      if (!dragDropData.settings.allowUnusedItems && dragDropData.items.some((item) => !assigned.includes(item.id))) {
-        alert("Assign every item to a correct target, or enable Allow distractors.");
         return false;
       }
     }
@@ -1267,6 +1297,63 @@ export default function AssessmentEditorPage({
     setLeftPanelImagePreviewUrl(URL.createObjectURL(file));
   }
 
+  function reuseSavedReference(referenceId: string) {
+    setSelectedReferenceQuestionId(referenceId);
+    const source = referenceBuilds.find((reference) => reference.id === referenceId);
+    if (!source) return;
+    setLeftPanelTitle(source.title || "");
+    setLeftPanelTopContent(source.top_content || "");
+    setLeftPanelContent(source.content || "");
+    setSelectedLeftPanelImageFile(null);
+    setExistingLeftPanelImageUrl(source.image_url || "");
+    setExistingLeftPanelImagePath(source.image_path || "");
+    setLeftPanelImagePreviewUrl(source.image_url || "");
+    setLeftPanelTableEnabled(source.table_data?.enabled || false);
+    setLeftPanelTableHasBorder(source.table_data?.hasBorder ?? true);
+    setLeftPanelTableCells(source.table_data?.cells?.length ? source.table_data.cells.map((row) => [...row]) : [["", ""], ["", ""]]);
+  }
+
+  async function saveReferenceBuild() {
+    const name = referenceBuildName.trim();
+    if (!name) {
+      alert("Enter a name for this reference.");
+      return;
+    }
+    setSavingReferenceBuild(true);
+    try {
+      const { data: authData } = await supabase.auth.getUser();
+      if (!authData.user) throw new Error("You must be signed in to save a reference.");
+      const image = await uploadLeftPanelImage();
+      const { data, error } = await supabase.from("reference_builds").insert({
+        owner_id: authData.user.id,
+        name,
+        title: leftPanelTitle.trim(),
+        top_content: leftPanelTopContent.trim(),
+        content: leftPanelContent.trim(),
+        image_url: image.imageUrl,
+        image_path: image.imagePath,
+        table_data: {
+          enabled: leftPanelTableEnabled,
+          hasBorder: leftPanelTableHasBorder,
+          cells: leftPanelTableCells.map((row) => row.map((cell) => cell.trim())),
+        },
+      }).select("*").single();
+      if (error) throw new Error(error.message);
+      setReferenceBuilds((current) => [...current, data as ReferenceBuild].sort((a, b) => a.name.localeCompare(b.name)));
+      setSelectedReferenceQuestionId(data.id);
+      setReferenceBuildName("");
+      setSelectedLeftPanelImageFile(null);
+      setExistingLeftPanelImageUrl(image.imageUrl);
+      setExistingLeftPanelImagePath(image.imagePath);
+      setLeftPanelImagePreviewUrl(image.imageUrl);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Could not save the reference.");
+    } finally {
+      setSavingReferenceBuild(false);
+      setUploadingImage(false);
+    }
+  }
+
   function handleMultipleChoiceImageChange(index: number, file: File | null) {
     setSelectedMultipleChoiceImageFiles((current) => {
       const next = { ...current };
@@ -1280,6 +1367,64 @@ export default function AssessmentEditorPage({
       else delete next[index];
       return next;
     });
+  }
+
+  function handleDragDropItemImageChange(itemId: string, file: File | null) {
+    setSelectedDragDropItemFiles((current) => {
+      const next = { ...current };
+      if (file) next[itemId] = file;
+      else delete next[itemId];
+      return next;
+    });
+    setDragDropItemPreviewUrls((current) => {
+      const next = { ...current };
+      if (file) next[itemId] = URL.createObjectURL(file);
+      else delete next[itemId];
+      return next;
+    });
+  }
+
+  function chooseDragDropItemImage(itemId: string, image: { url: string; path: string }) {
+    setSelectedDragDropItemFiles((current) => {
+      const next = { ...current };
+      delete next[itemId];
+      return next;
+    });
+    setDragDropItemPreviewUrls((current) => ({ ...current, [itemId]: image.url }));
+    setDragDropData((current) => ({
+      ...current,
+      items: current.items.map((item) => item.id === itemId ? { ...item, imageUrl: image.url, imagePath: image.path } : item),
+    }));
+  }
+
+  function removeDragDropItemImage(itemId: string) {
+    handleDragDropItemImageChange(itemId, null);
+    setDragDropData((current) => ({
+      ...current,
+      items: current.items.map((item) => item.id === itemId ? { ...item, imageUrl: "", imagePath: "" } : item),
+    }));
+  }
+
+  async function uploadDragDropItemImages(data: DragDropData) {
+    const items: DragDropData["items"] = [];
+    for (const item of data.items) {
+      const file = selectedDragDropItemFiles[item.id];
+      if (!file) {
+        items.push(item);
+        continue;
+      }
+      setUploadingImage(true);
+      const filePath = `${assessmentId}/drag-drop-${Date.now()}-${item.id}-${cleanFileName(file.name)}`;
+      const { error } = await supabase.storage.from("question-images").upload(filePath, file, { upsert: false });
+      if (error) {
+        setUploadingImage(false);
+        throw new Error(error.message);
+      }
+      const { data: publicUrlData } = supabase.storage.from("question-images").getPublicUrl(filePath);
+      items.push({ ...item, imageUrl: publicUrlData.publicUrl, imagePath: filePath });
+    }
+    setUploadingImage(false);
+    return { ...data, items };
   }
 
   async function uploadMultipleChoiceImages() {
@@ -1937,7 +2082,8 @@ export default function AssessmentEditorPage({
         }
       }
       if (questionType === "drag-and-drop") {
-        const { error } = await supabase.from("questions").insert({ assessment_id: assessmentId, question_type: "drag-and-drop", prompt: prompt.trim(), question_data: { ...(await getQuestionLayoutData()), dragDrop: dragDropData }, question_order: getNextQuestionOrder() });
+        const uploadedDragDropData = await uploadDragDropItemImages(dragDropData);
+        const { error } = await supabase.from("questions").insert({ assessment_id: assessmentId, question_type: "drag-and-drop", prompt: prompt.trim(), question_data: { ...(await getQuestionLayoutData()), dragDrop: uploadedDragDropData }, question_order: getNextQuestionOrder() });
         if (error) { alert(error.message); return; }
       }
 
@@ -1963,7 +2109,10 @@ export default function AssessmentEditorPage({
     setEditingQuestionId(question.id);
     setQuestionType(question.question_type);
     setDragDropData(normalizeDragDropData(question.question_data.dragDrop));
+    setSelectedDragDropItemFiles({});
+    setDragDropItemPreviewUrls(Object.fromEntries(normalizeDragDropData(question.question_data.dragDrop).items.filter((item) => item.imageUrl).map((item) => [item.id, item.imageUrl || ""])));
     setQuestionLayout(question.question_data.layout || "standard");
+    setSelectedReferenceQuestionId("");
     setLeftPanelTitle(question.question_data.leftPanelTitle || "");
     setLeftPanelTopContent(question.question_data.leftPanelTopContent || "");
     setLeftPanelContent(question.question_data.leftPanelContent || "");
@@ -2250,7 +2399,8 @@ export default function AssessmentEditorPage({
         }
       }
       if (questionType === "drag-and-drop") {
-        const { error } = await supabase.from("questions").update({ question_type: "drag-and-drop", prompt: prompt.trim(), question_data: { ...(await getQuestionLayoutData()), dragDrop: dragDropData } }).eq("id", editingQuestionId);
+        const uploadedDragDropData = await uploadDragDropItemImages(dragDropData);
+        const { error } = await supabase.from("questions").update({ question_type: "drag-and-drop", prompt: prompt.trim(), question_data: { ...(await getQuestionLayoutData()), dragDrop: uploadedDragDropData } }).eq("id", editingQuestionId);
         if (error) { alert(error.message); return; }
       }
 
@@ -2678,6 +2828,26 @@ export default function AssessmentEditorPage({
                   </div>
                 </div>
                   <div>
+                <div className="rounded-xl border border-blue-200 bg-blue-50 p-3">
+                  <label className="block text-xs font-bold uppercase tracking-wider text-blue-800">
+                    Reuse a saved reference
+                  </label>
+                  <select
+                    value={selectedReferenceQuestionId}
+                    onChange={(event) => reuseSavedReference(event.target.value)}
+                    className="mt-2 w-full rounded-lg border border-blue-300 bg-white px-3 py-2 text-sm text-slate-900"
+                  >
+                    <option value="">Build a new reference</option>
+                    {referenceBuilds.map((reference) => (
+                      <option key={reference.id} value={reference.id}>
+                        {reference.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-2 text-xs leading-5 text-blue-700">
+                    Your explicitly saved references are available in every assessment. Choosing one copies it here without changing the original.
+                  </p>
+                </div>
                 <p className="mt-1 text-xs leading-5 text-slate-400">
                   Add a title, supporting image, and reference text. Each field is optional.
                 </p>
@@ -2804,6 +2974,30 @@ export default function AssessmentEditorPage({
                   onChange={setLeftPanelContent}
                   placeholder="Add captions, facts, or reference text that appears after the image..."
                 />
+                <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+                  <label className="block text-xs font-bold uppercase tracking-wider text-emerald-800">
+                    Save to reference library
+                  </label>
+                  <p className="mt-1 text-xs leading-5 text-emerald-700">
+                    Saving the question does not add this reference to your library.
+                  </p>
+                  <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                    <input
+                      value={referenceBuildName}
+                      onChange={(event) => setReferenceBuildName(event.target.value)}
+                      placeholder="Reference name"
+                      className="min-w-0 flex-1 rounded-lg border border-emerald-300 bg-white px-3 py-2 text-sm text-slate-900"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void saveReferenceBuild()}
+                      disabled={savingReferenceBuild || !referenceBuildName.trim()}
+                      className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {savingReferenceBuild ? "Saving..." : "Save reference build"}
+                    </button>
+                  </div>
+                </div>
                   </div>
               </section>
               )}
@@ -2871,7 +3065,7 @@ export default function AssessmentEditorPage({
               )}
             </div>
 
-            {questionType === "drag-and-drop" && <DragDropEditor value={dragDropData} onChange={setDragDropData} />}
+            {questionType === "drag-and-drop" && <DragDropEditor value={dragDropData} onChange={setDragDropData} uploadedImages={uploadedImages} itemPreviewUrls={dragDropItemPreviewUrls} onItemImageFileChange={handleDragDropItemImageChange} onChooseItemImage={chooseDragDropItemImage} onRemoveItemImage={removeDragDropItemImage} />}
 
             {questionType === "multiple-choice" && (
               <>
@@ -3914,6 +4108,62 @@ export default function AssessmentEditorPage({
                             {choiceHtml[index] ? <div className="rich-text-content" dangerouslySetInnerHTML={{ __html: choiceHtml[index] }} /> : choice.trim()}
                           </div>
                         ))}
+                      </div>
+                    )}
+
+                    {questionType === "drag-and-drop" && (
+                      <div className="mt-6 space-y-5">
+                        <div>
+                          <p className="mb-2 text-xs font-bold uppercase tracking-[0.14em] text-slate-500">
+                            Choices
+                          </p>
+                          <div className={`flex flex-wrap gap-3 ${dragDropData.preset === "categories" ? "justify-center" : ""}`}>
+                            {dragDropData.items.map((item) => (
+                              <div
+                                key={item.id}
+                                className={`${dragDropData.preset === "categories" ? "min-w-32 rounded-none border-slate-500 px-4 py-2.5 text-center font-serif font-semibold" : "rounded-lg border-slate-300 px-4 py-3 text-sm font-medium shadow-sm"} border bg-white text-slate-900`}
+                              >
+                                {(dragDropItemPreviewUrls[item.id] || item.imageUrl) && (
+                                  <img
+                                    src={dragDropItemPreviewUrls[item.id] || item.imageUrl}
+                                    alt=""
+                                    className="mb-2 max-h-24 max-w-32 object-contain"
+                                  />
+                                )}
+                                {item.content || "Untitled item"}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div
+                          className={`grid ${
+                            dragDropData.preset === "categories"
+                              ? "gap-2 sm:grid-cols-2"
+                              : dragDropData.preset === "sequence"
+                                ? "grid-cols-1 gap-4"
+                                : "gap-4 sm:grid-cols-2"
+                          }`}
+                        >
+                          {dragDropData.zones.map((zone, zoneIndex) => (
+                            <div
+                              key={zone.id}
+                              className={dragDropData.preset === "categories" ? "min-h-52 rounded-none border border-slate-500 bg-white" : "min-h-28 rounded-xl border-2 border-dashed border-blue-300 bg-blue-50/50 p-4"}
+                            >
+                              <p className={dragDropData.preset === "categories" ? "border-b border-slate-500 px-4 py-2 text-center font-serif font-semibold text-slate-900" : "font-semibold text-blue-900"}>
+                                {zone.label ||
+                                  (dragDropData.preset === "categories"
+                                    ? `Category ${zoneIndex + 1}`
+                                    : `Position ${zoneIndex + 1}`)}
+                              </p>
+                              {dragDropData.preset !== "categories" && (
+                                <p className="mt-2 text-xs text-blue-700">
+                                  Students drop choices here
+                                </p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )}
 

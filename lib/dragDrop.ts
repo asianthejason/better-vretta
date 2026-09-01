@@ -30,7 +30,6 @@ export type DragDropData = {
   settings: {
     shuffleItems: boolean;
     allowReuse: boolean;
-    allowUnusedItems: boolean;
     showZoneOutlines: boolean;
     scoring: "per-placement" | "all-or-nothing";
   };
@@ -57,7 +56,6 @@ export function createDefaultDragDropData(): DragDropData {
     settings: {
       shuffleItems: true,
       allowReuse: false,
-      allowUnusedItems: false,
       showZoneOutlines: true,
       scoring: "per-placement",
     },
@@ -95,8 +93,9 @@ export function gradeDragDrop(data: DragDropData, placements: DragDropPlacements
 
 export function isDragDropAnswered(data: DragDropData, placements: DragDropPlacements) {
   const placed = Object.values(placements).flat();
+  const requiredItemIds = new Set(data.zones.flatMap((zone) => zone.correctItemIds));
   const requiredZonesFilled = data.zones
     .filter((zone) => zone.correctItemIds.length > 0)
     .every((zone) => (placements[zone.id] || []).length > 0);
-  return requiredZonesFilled && (data.settings.allowUnusedItems || data.items.every((item) => placed.includes(item.id)));
+  return requiredZonesFilled && [...requiredItemIds].every((itemId) => placed.includes(itemId));
 }
