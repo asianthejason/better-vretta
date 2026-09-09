@@ -86,6 +86,13 @@ type Assessment = {
   is_published: boolean;
 };
 
+type AssessmentEntryState = {
+  runStatus: "waiting" | "live" | "ended";
+  studentStatus: "waiting" | "active" | "blocked" | "submitted";
+  blockReason: string | null;
+  kickCount: number;
+};
+
 type Question = {
   id: string;
   assessment_id: string;
@@ -251,12 +258,17 @@ export default function StudentAssessmentPage({
 
   const [submitted, setSubmitted] = useState(false);
   const [lockdownExit, setLockdownExit] = useState(false);
+  const [entryState, setEntryState] = useState<AssessmentEntryState | null>(null);
+  const [questionsReady, setQuestionsReady] = useState(false);
   const [score, setScore] = useState(0);
   const [loading, setLoading] = useState(true);
   const [activeQuestionIndex, setActiveQuestionIndex] = useState(0);
   const [studentPanelView, setStudentPanelView] = useState<StudentPanelView>("split");
   const activeSecondsRef = useRef(0);
   const lockdownEndingRef = useRef(false);
+  const accessTokenRef = useRef("");
+  const questionsLoadingRef = useRef(false);
+  const questionsLoadedRef = useRef(false);
 
   useEffect(() => {
     async function getParams() {
@@ -275,7 +287,7 @@ export default function StudentAssessmentPage({
   }, [activeQuestionIndex]);
 
   useEffect(() => {
-    if (!assessment || accountRole !== "student" || teacherPreview || submitted) return;
+    if (!assessment || accountRole !== "student" || teacherPreview || submitted || entryState?.studentStatus === "submitted") return;
 
     lockdownEndingRef.current = false;
 
@@ -296,11 +308,28 @@ export default function StudentAssessmentPage({
       setLockdownExit(true);
       const seconds = activeSecondsRef.current;
       activeSecondsRef.current = 0;
-      await supabase.rpc("record_assessment_kick", {
-        target_assessment: assessment.id,
-        seconds_to_add: seconds,
-      });
-      window.location.replace("/student/dashboard?lockdown=1");
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+      let violationRecorded = false;
+      if (supabaseUrl && anonKey && accessTokenRef.current) {
+        const response = await fetch(`${supabaseUrl}/rest/v1/rpc/record_assessment_kick`, {
+          method: "POST",
+          keepalive: true,
+          headers: { apikey: anonKey, Authorization: `Bearer ${accessTokenRef.current}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ target_assessment: assessment.id, seconds_to_add: seconds }),
+        });
+        violationRecorded = response.ok;
+        if (!response.ok) {
+          const { error } = await supabase.rpc("record_assessment_kick", { target_assessment: assessment.id, seconds_to_add: seconds });
+          violationRecorded = !error;
+        }
+      } else {
+        const { error } = await supabase.rpc("record_assessment_kick", { target_assessment: assessment.id, seconds_to_add: seconds });
+        violationRecorded = !error;
+      }
+      if (violationRecorded) setEntryState((current) => current ? { ...current, studentStatus: "blocked", blockReason: "Tried to leave lockdown browser", kickCount: current.kickCount + 1 } : current);
+      else await refreshEntryState(assessment.id);
+      setLockdownExit(false);
     }
 
     const activeTimer = window.setInterval(() => {
@@ -320,21 +349,74 @@ export default function StudentAssessmentPage({
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("blur", handleBlur);
+    window.addEventListener("pagehide", terminateForLockdown);
     return () => {
       window.clearInterval(activeTimer);
       window.clearInterval(flushTimer);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("blur", handleBlur);
+      window.removeEventListener("pagehide", terminateForLockdown);
       if (!lockdownEndingRef.current) void flushActivity();
     };
+  }, [assessment, accountRole, submitted, teacherPreview, entryState?.studentStatus]);
+
+  useEffect(() => {
+    if (entryState?.studentStatus === "active") lockdownEndingRef.current = false;
+  }, [entryState?.studentStatus]);
+
+  async function loadQuestions(assessmentId: string) {
+    if (questionsLoadedRef.current || questionsLoadingRef.current) return;
+    questionsLoadingRef.current = true;
+    const { data: questionData, error: questionError } = await supabase.from("questions").select("*").eq("assessment_id", assessmentId).in("question_type", ["multiple-choice", "drag-and-drop"]).order("question_order", { ascending: true });
+    if (questionError) {
+      questionsLoadingRef.current = false;
+      setQuestionsReady(true);
+      alert(questionError.message);
+      return;
+    }
+    const typedQuestions = (questionData || []) as Question[];
+    const initialOrderResponses: SortingOrderResponses = {};
+    const initialCategoryResponses: SortingCategoryResponses = {};
+    const initialDragDropResponses: Record<string, DragDropPlacements> = {};
+    typedQuestions.forEach((question) => {
+      if (question.question_type === "sorting-order") initialOrderResponses[question.id] = shuffleArray(question.question_data.sortingItems?.map((item) => item.id) || []);
+      if (question.question_type === "sorting-category") {
+        const assignments: Record<string, string> = {};
+        (question.question_data.sortingItems || []).forEach((item) => { assignments[item.id] = ""; });
+        initialCategoryResponses[question.id] = assignments;
+      }
+      if (question.question_type === "drag-and-drop") initialDragDropResponses[question.id] = Object.fromEntries(normalizeDragDropData(question.question_data.dragDrop).zones.map((zone) => [zone.id, []]));
+    });
+    setQuestions(typedQuestions);
+    setDragDropResponses(initialDragDropResponses);
+    setSortingOrderResponses(initialOrderResponses);
+    setSortingCategoryResponses(initialCategoryResponses);
+    questionsLoadedRef.current = true;
+    questionsLoadingRef.current = false;
+    setQuestionsReady(true);
+  }
+
+  async function refreshEntryState(assessmentId: string) {
+    const { data, error } = await supabase.rpc("assessment_entry_state", { target_assessment: assessmentId });
+    if (error || !data) return;
+    const next = data as AssessmentEntryState;
+    setEntryState(next);
+    if (next.runStatus === "live" && next.studentStatus === "active") await loadQuestions(assessmentId);
+  }
+
+  useEffect(() => {
+    if (!assessment || accountRole !== "student" || teacherPreview || submitted) return;
+    const timer = window.setInterval(() => void refreshEntryState(assessment.id), 2000);
+    return () => window.clearInterval(timer);
   }, [assessment, accountRole, submitted, teacherPreview]);
 
   async function loadAssessment(code: string) {
-    const { data: { user } } = await supabase.auth.getUser();
+    const [{ data: { user } }, { data: { session } }] = await Promise.all([supabase.auth.getUser(), supabase.auth.getSession()]);
     if (!user) {
       window.location.href = "/login";
       return;
     }
+    accessTokenRef.current = session?.access_token || "";
     setStudentUserId(user.id);
     let assessmentQuery = supabase
       .from("assessments")
@@ -360,21 +442,7 @@ export default function StudentAssessmentPage({
     }
     setAccountRole(profile?.role === "teacher" ? "teacher" : "student");
     setStudentName(profile?.full_name?.trim() || profile?.email?.trim() || user.email || "");
-
-    const { data: questionData, error: questionError } = await supabase
-      .from("questions")
-      .select("*")
-      .eq("assessment_id", assessmentData.id)
-      .in("question_type", ["multiple-choice", "drag-and-drop"])
-      .order("question_order", { ascending: true });
-
-    if (questionError) {
-      alert(questionError.message);
-      setLoading(false);
-      return;
-    }
-
-    const typedQuestions = (questionData || []) as Question[];
+    setAssessment(assessmentData);
 
     if (profile?.role === "student") {
       const { error: sessionError } = await supabase.rpc("start_assessment_session", {
@@ -385,36 +453,10 @@ export default function StudentAssessmentPage({
         setLoading(false);
         return;
       }
+      await refreshEntryState(assessmentData.id);
+    } else {
+      await loadQuestions(assessmentData.id);
     }
-
-    const initialOrderResponses: SortingOrderResponses = {};
-    const initialCategoryResponses: SortingCategoryResponses = {};
-    const initialDragDropResponses: Record<string, DragDropPlacements> = {};
-
-    typedQuestions.forEach((question) => {
-      if (question.question_type === "sorting-order") {
-        initialOrderResponses[question.id] = shuffleArray(
-          question.question_data.sortingItems?.map((item) => item.id) || []
-        );
-      }
-
-      if (question.question_type === "sorting-category") {
-        const assignments: Record<string, string> = {};
-        (question.question_data.sortingItems || []).forEach((item) => {
-          assignments[item.id] = "";
-        });
-        initialCategoryResponses[question.id] = assignments;
-      }
-      if (question.question_type === "drag-and-drop") {
-        initialDragDropResponses[question.id] = Object.fromEntries(normalizeDragDropData(question.question_data.dragDrop).zones.map((zone) => [zone.id, []]));
-      }
-    });
-
-    setAssessment(assessmentData);
-    setQuestions(typedQuestions);
-    setDragDropResponses(initialDragDropResponses);
-    setSortingOrderResponses(initialOrderResponses);
-    setSortingCategoryResponses(initialCategoryResponses);
     setLoading(false);
   }
 
@@ -863,20 +905,16 @@ export default function StudentAssessmentPage({
       return;
     }
 
+    const { error: completionError } = await supabase.rpc("complete_assessment_session", {
+      target_assessment: assessment.id,
+    });
+    if (completionError) {
+      alert(`Your answers were saved, but the assessment could not be closed: ${completionError.message}`);
+      return;
+    }
+
     setScore(totalCorrect);
     setSubmitted(true);
-  }
-
-  function prepareIntentionalExit() {
-    lockdownEndingRef.current = true;
-    const seconds = activeSecondsRef.current;
-    activeSecondsRef.current = 0;
-    if (assessment && seconds > 0 && accountRole === "student") {
-      void supabase.rpc("record_assessment_activity", {
-        target_assessment: assessment.id,
-        seconds_to_add: seconds,
-      });
-    }
   }
 
   if (loading) {
@@ -967,14 +1005,40 @@ export default function StudentAssessmentPage({
     );
   }
 
+  if (!teacherPreview && accountRole === "student" && entryState?.studentStatus !== "active") {
+    const blocked = entryState?.studentStatus === "blocked";
+    const alreadySubmitted = entryState?.studentStatus === "submitted";
+    const ended = entryState?.runStatus === "ended";
+    return <main className="min-h-screen bg-slate-950 text-white">
+      <header className="border-b border-slate-800"><div className="mx-auto flex min-h-20 max-w-5xl items-center justify-between px-6"><span className="font-bold">Jretta</span><span className="rounded-lg bg-slate-900 px-3 py-2 font-mono text-xs font-bold tracking-wider text-slate-400">{assessment.assessment_code}</span></div></header>
+      <section className="mx-auto flex min-h-[calc(100vh-5rem)] max-w-2xl items-center justify-center px-6 py-16 text-center">
+        <div aria-live="polite">
+          <span className={`mx-auto grid size-16 place-items-center rounded-full text-2xl ${blocked ? "bg-red-500/20 text-red-300" : alreadySubmitted ? "bg-emerald-500/20 text-emerald-300" : "bg-blue-500/20 text-blue-300"}`}>{blocked ? "!" : alreadySubmitted ? "✓" : "…"}</span>
+          <p className="mt-7 text-sm font-bold uppercase tracking-[0.18em] text-blue-300">{alreadySubmitted ? "Assessment complete" : "Lockdown waiting room"}</p>
+          <h1 className="mt-3 text-4xl font-bold">{blocked ? "Access paused" : alreadySubmitted ? "Already submitted" : ended ? "Assessment ended" : "Waiting for your teacher"}</h1>
+          <p className={`mx-auto mt-4 max-w-lg leading-7 ${blocked ? "font-semibold text-red-300" : "text-slate-300"}`}>{blocked ? (entryState?.blockReason || "Tried to leave lockdown browser") : alreadySubmitted ? "Your response has already been recorded." : ended ? "Your teacher has ended this assessment." : "You are checked in. The assessment will open automatically when your teacher starts it."}</p>
+          {blocked && <p className="mx-auto mt-3 max-w-lg text-sm leading-6 text-slate-400">Your teacher can see this warning and must grant access before you can continue.</p>}
+          {!alreadySubmitted && !ended && <div className="mx-auto mt-8 h-2 w-48 overflow-hidden rounded-full bg-slate-800"><span className="block h-full w-1/2 animate-pulse rounded-full bg-blue-500" /></div>}
+          <p className="mt-8 text-xs font-semibold uppercase tracking-wider text-slate-500">Lockdown is active. Keep this tab and window focused.</p>
+        </div>
+      </section>
+    </main>;
+  }
+
+  if (!questionsReady) {
+    return <main className="grid min-h-screen place-items-center bg-slate-950 px-6 text-center text-white"><div><span className="mx-auto block size-8 animate-spin rounded-full border-2 border-blue-300/30 border-t-blue-300" /><h1 className="mt-5 text-2xl font-bold">Opening assessment…</h1><p className="mt-2 text-sm text-slate-400">Lockdown is active while your questions load.</p></div></main>;
+  }
+
   const answeredCount = questions.filter(questionIsAnswered).length;
   const dashboardHref = accountRole === "teacher" ? "/teacher" : "/student/dashboard";
   const activeQuestionHasSplitView =
     questions[activeQuestionIndex]?.question_data.layout === "split";
   const canSubmitAssessment =
-    !teacherPreview && studentName.trim().length > 0 && answeredCount === questions.length;
+    !teacherPreview && questions.length > 0 && studentName.trim().length > 0 && answeredCount === questions.length;
   const submitDisabledReason = teacherPreview
     ? "Teacher preview mode cannot submit an assessment."
+    : questions.length === 0
+    ? "This assessment does not have any questions."
     : !studentName.trim()
     ? "Update your profile name before submitting."
     : answeredCount < questions.length
@@ -987,9 +1051,9 @@ export default function StudentAssessmentPage({
         <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-950 px-6 text-center text-white">
           <div>
             <div className="mx-auto grid size-14 place-items-center rounded-full bg-red-500/20 text-2xl text-red-300">!</div>
-            <h2 className="mt-5 text-2xl font-bold">Assessment exited</h2>
+            <h2 className="mt-5 text-2xl font-bold">Lockdown interrupted</h2>
             <p className="mt-2 max-w-md text-sm leading-6 text-slate-300">
-              The assessment window lost focus. Returning to your dashboard…
+              The assessment window lost focus. Returning to the waiting room…
             </p>
           </div>
         </div>
@@ -997,19 +1061,11 @@ export default function StudentAssessmentPage({
       <header className="border-b border-slate-200 bg-white">
         <div className="flex min-h-20 items-center justify-between gap-6 px-5 py-4 lg:px-7">
           <div className="min-w-0">
-            <Link href={dashboardHref} onClick={prepareIntentionalExit} className="text-xs font-semibold uppercase tracking-wider text-blue-600 hover:text-blue-700">
-              Jretta
-            </Link>
+            {teacherPreview ? <Link href={dashboardHref} className="text-xs font-semibold uppercase tracking-wider text-blue-600 hover:text-blue-700">Jretta</Link> : <span className="text-xs font-semibold uppercase tracking-wider text-blue-600">Jretta</span>}
             <h1 className="mt-1 truncate text-xl font-bold">{assessment.title}</h1>
           </div>
           <div className="flex shrink-0 items-center gap-3">
-            <Link
-              href={dashboardHref}
-              onClick={prepareIntentionalExit}
-              className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-600 transition hover:border-slate-400 hover:bg-slate-50 hover:text-slate-900"
-            >
-              Exit assessment
-            </Link>
+            {teacherPreview && <Link href={dashboardHref} className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-600 transition hover:border-slate-400 hover:bg-slate-50 hover:text-slate-900">Exit preview</Link>}
             {teacherPreview && (
               <span className="hidden rounded-full bg-blue-50 px-3 py-1.5 text-xs font-bold text-blue-700 ring-1 ring-blue-200 sm:inline-flex">
                 Teacher preview

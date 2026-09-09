@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test:billing": "node --conditions=react-server --import tsx --test tests/teacher-billing.test.ts tests/teacher-routes.test.ts",
+    "test:assessment-live": "node --import tsx --test tests/assessment-live-sessions.test.ts",
     "test:student": "node --import tsx --test tests/student-classrooms.test.ts",
     "test:signup": "playwright test"
   },

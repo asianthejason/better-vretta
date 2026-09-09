@@ -73,6 +73,7 @@ type Assessment = {
   title: string;
   assessment_code: string;
   classroom_id: string | null;
+  is_published: boolean;
 };
 
 type Question = {
@@ -160,7 +161,12 @@ type AssessmentSession = {
   first_opened_at: string;
   active_seconds: number;
   kick_count: number;
+  status: "waiting" | "active" | "blocked" | "submitted";
+  block_reason: string | null;
+  last_activity_at: string;
 };
+
+type RosterStudent = { id: string; full_name: string; email: string };
 
 function normalizeAnswer(answer: string | undefined) {
   return (answer || "").trim().toLowerCase();
@@ -201,6 +207,10 @@ export default function ResultsPage({
   const [attempts, setAttempts] = useState<StudentAttempt[]>([]);
   const [sessionsByStudent, setSessionsByStudent] = useState<Record<string, AssessmentSession>>({});
   const [assignedStudentIds, setAssignedStudentIds] = useState<string[]>([]);
+  const [rosterByStudent, setRosterByStudent] = useState<Record<string, RosterStudent>>({});
+  const [runStatus, setRunStatus] = useState<"waiting" | "live" | "ended">("waiting");
+  const [runActionBusy, setRunActionBusy] = useState(false);
+  const [grantingStudentId, setGrantingStudentId] = useState<string | null>(null);
   const [answersByAttempt, setAnswersByAttempt] = useState<
     Record<string, StudentAnswer[]>
   >({});
@@ -220,13 +230,31 @@ export default function ResultsPage({
     getParams();
   }, [params]);
 
+  useEffect(() => {
+    if (!assessmentId) return;
+    const timer = window.setInterval(() => void refreshLiveRoom(assessmentId), 2000);
+    return () => window.clearInterval(timer);
+  }, [assessmentId]);
+
+  async function refreshLiveRoom(id: string) {
+    const [sessionResult, runResult] = await Promise.all([
+      supabase.from("assessment_sessions").select("student_id,first_opened_at,active_seconds,kick_count,status,block_reason,last_activity_at").eq("assessment_id", id),
+      supabase.from("assessment_runs").select("status").eq("assessment_id", id).single(),
+    ]);
+    if (!sessionResult.error) setSessionsByStudent((sessionResult.data || []).reduce((sessions: Record<string, AssessmentSession>, session) => {
+      sessions[session.student_id] = session as AssessmentSession;
+      return sessions;
+    }, {}));
+    if (!runResult.error) setRunStatus(runResult.data.status as "waiting" | "live" | "ended");
+  }
+
   async function loadResults(id: string) {
     const user = await requireAccountRole("teacher");
     if (!user) return;
 
     const { data: assessmentData, error: assessmentError } = await supabase
       .from("assessments")
-      .select("id, title, assessment_code, classroom_id")
+      .select("id, title, assessment_code, classroom_id, is_published")
       .eq("id", id)
       .single();
 
@@ -246,9 +274,23 @@ export default function ResultsPage({
         setLoading(false);
         return;
       }
-      setAssignedStudentIds((rosterData || []).map((student) => student.student_id));
+      const rosterIds = (rosterData || []).map((student) => student.student_id);
+      setAssignedStudentIds(rosterIds);
+      const { data: profileData, error: profileError } = rosterIds.length
+        ? await supabase.from("profiles").select("id,full_name,email").in("id", rosterIds)
+        : { data: [] as RosterStudent[], error: null };
+      if (profileError) {
+        alert(`Student names could not be loaded: ${profileError.message}`);
+        setLoading(false);
+        return;
+      }
+      setRosterByStudent((profileData || []).reduce((students: Record<string, RosterStudent>, profile) => {
+        students[profile.id] = profile as RosterStudent;
+        return students;
+      }, {}));
     } else {
       setAssignedStudentIds([]);
+      setRosterByStudent({});
     }
 
     const { data: questionData, error: questionError } = await supabase
@@ -278,7 +320,7 @@ export default function ResultsPage({
 
     const { data: sessionData, error: sessionError } = await supabase
       .from("assessment_sessions")
-      .select("student_id,first_opened_at,active_seconds,kick_count")
+      .select("student_id,first_opened_at,active_seconds,kick_count,status,block_reason,last_activity_at")
       .eq("assessment_id", id);
 
     if (sessionError) {
@@ -286,6 +328,14 @@ export default function ResultsPage({
       setLoading(false);
       return;
     }
+
+    const { data: runData, error: runError } = await supabase.from("assessment_runs").select("status").eq("assessment_id", id).single();
+    if (runError) {
+      alert(`Live assessment controls could not be loaded: ${runError.message}`);
+      setLoading(false);
+      return;
+    }
+    setRunStatus(runData.status as "waiting" | "live" | "ended");
 
     const attemptIds = (attemptData || []).map((attempt) => attempt.id);
 
@@ -372,6 +422,24 @@ export default function ResultsPage({
   async function signOut() {
     await supabase.auth.signOut();
     window.location.href = "/";
+  }
+
+  async function setAssessmentRun(action: "start" | "end") {
+    if (!assessment) return;
+    setRunActionBusy(true);
+    const { error } = await supabase.rpc(action === "start" ? "start_assessment_run" : "end_assessment_run", { target_assessment: assessment.id });
+    if (error) alert(error.message);
+    else await refreshLiveRoom(assessment.id);
+    setRunActionBusy(false);
+  }
+
+  async function grantReentry(studentId: string) {
+    if (!assessment) return;
+    setGrantingStudentId(studentId);
+    const { error } = await supabase.rpc("grant_assessment_reentry", { target_assessment: assessment.id, target_student: studentId });
+    if (error) alert(error.message);
+    else await refreshLiveRoom(assessment.id);
+    setGrantingStudentId(null);
   }
 
   function questionIsScored(question: Question | StudentAnswer["questions"]) {
@@ -902,7 +970,7 @@ export default function ResultsPage({
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-3">
                 <span className="rounded-full bg-blue-500/10 px-3 py-1 text-xs font-bold uppercase tracking-wider text-blue-300 ring-1 ring-inset ring-blue-400/20">
-                  Assessment results
+                  {runStatus === "live" ? "Assessment live" : runStatus === "ended" ? "Assessment ended" : "Waiting room"}
                 </span>
                 <span className="font-mono text-xs font-bold tracking-widest text-slate-400">
                   {assessment.assessment_code}
@@ -914,6 +982,7 @@ export default function ResultsPage({
             </div>
 
             <div className="flex shrink-0 flex-wrap gap-2">
+            {runStatus === "live" ? <button onClick={() => void setAssessmentRun("end")} disabled={runActionBusy} className="rounded-xl bg-red-500 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-red-400 disabled:opacity-50">{runActionBusy ? "Updating…" : "End assessment"}</button> : <button onClick={() => void setAssessmentRun("start")} disabled={runActionBusy || !assessment.is_published} title={assessment.is_published ? "Open assessment access for waiting students" : "Publish this assessment before starting it"} className="rounded-xl bg-blue-500 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-50">{runActionBusy ? "Starting…" : runStatus === "ended" ? "Start again" : "Start assessment"}</button>}
             <button
               onClick={() => loadResults(assessmentId)}
               className="rounded-xl border border-slate-700 bg-slate-950/40 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:border-slate-600 hover:bg-slate-800"
@@ -949,6 +1018,26 @@ export default function ResultsPage({
               <p className="mt-1 text-xs text-slate-500">total attempts</p>
             </div>
           </div>
+        </section>
+
+        <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900">
+          <div className="flex flex-col gap-2 border-b border-slate-800 px-5 py-5 sm:flex-row sm:items-center sm:justify-between">
+            <div><h2 className="text-2xl font-semibold">Assessment room</h2><p className="mt-1 text-sm text-slate-400">The full class list, including students who have not entered the waiting room.</p></div>
+            <span className="text-sm font-semibold text-slate-400">{Object.keys(sessionsByStudent).length} of {assignedStudentIds.length} checked in</span>
+          </div>
+          {!assessment.is_published && <p className="border-b border-amber-500/20 bg-amber-500/10 px-5 py-3 text-sm font-semibold text-amber-200">Publish this assessment before students can enter its waiting room.</p>}
+          {assignedStudentIds.length === 0 ? <p className="px-5 py-8 text-slate-400">This assessment does not have a classroom roster.</p> : <div className="divide-y divide-slate-800">
+            {assignedStudentIds.map((studentId) => {
+              const student = rosterByStudent[studentId];
+              const session = sessionsByStudent[studentId];
+              const statusLabel = !session ? "Not in waiting room" : session.status === "waiting" ? "Waiting" : session.status === "active" ? "In assessment" : session.status === "blocked" ? "Access paused" : "Submitted";
+              const statusStyle = !session ? "bg-slate-800 text-slate-400" : session.status === "waiting" ? "bg-amber-500/10 text-amber-200" : session.status === "active" ? "bg-blue-500/10 text-blue-200" : session.status === "blocked" ? "bg-red-500/10 text-red-200" : "bg-emerald-500/10 text-emerald-200";
+              return <div key={studentId} className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                <div><p className="font-semibold text-white">{student?.full_name?.trim() || student?.email || "Student"}</p><p className="mt-1 text-xs text-slate-500">{student?.email || ""}</p>{session?.block_reason && <p className="mt-2 text-sm font-semibold text-red-300">{session.block_reason}</p>}</div>
+                <div className="flex items-center gap-3"><span className={`rounded-full px-3 py-1.5 text-xs font-bold ${statusStyle}`}>{statusLabel}</span>{session?.status === "blocked" && <button type="button" disabled={grantingStudentId === studentId || runStatus !== "live"} onClick={() => void grantReentry(studentId)} className="rounded-lg bg-white px-3 py-2 text-xs font-bold text-slate-950 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50">{grantingStudentId === studentId ? "Granting…" : "Grant access"}</button>}</div>
+              </div>;
+            })}
+          </div>}
         </section>
 
         <section className="mt-8">

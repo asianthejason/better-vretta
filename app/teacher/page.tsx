@@ -518,7 +518,7 @@ export default function TeacherPage() {
                         href={`/teacher/assessments/${assessment.id}/results`}
                         className="rounded-md border border-slate-200 px-2 py-1.5 text-center text-[10px] font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-900"
                       >
-                        Results
+                        Run &amp; results
                       </Link>
 
                       <button
