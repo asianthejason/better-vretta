@@ -42,7 +42,7 @@ export default function Home() {
                 href={accountRole === "teacher" ? "/teacher" : "/student/dashboard"}
                 className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800"
               >
-                Open dashboard
+                {accountRole === "teacher" ? "Teacher dashboard" : "Student dashboard"}
               </Link>
               <button
                 type="button"

@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { requireAccountRole } from "@/lib/roleGuard";
+import { readPendingSignup } from "@/lib/pendingSignup";
+import LockedDashboard from "@/app/components/LockedDashboard";
 
 type Assessment = {
   id: string;
@@ -43,6 +45,7 @@ export default function TeacherPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [assessments, setAssessments] = useState<Assessment[]>([]);
   const [loading, setLoading] = useState(true);
+  const [lockedEmail, setLockedEmail] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [movingAssessmentId, setMovingAssessmentId] = useState<string | null>(null);
   const [publishingAssessmentId, setPublishingAssessmentId] = useState<string | null>(null);
@@ -67,6 +70,13 @@ export default function TeacherPage() {
   }, []);
 
   async function loadTeacherData() {
+    const pending = readPendingSignup();
+    const { data: { user: sessionUser } } = await supabase.auth.getUser();
+    if (!sessionUser && pending?.role === "teacher") {
+      setLockedEmail(pending.email);
+      setLoading(false);
+      return;
+    }
     const user = await requireAccountRole("teacher");
     if (!user) return;
 
@@ -272,6 +282,8 @@ export default function TeacherPage() {
     window.setTimeout(() => setCopiedClassroomId(null), 1800);
   }
 
+  if (lockedEmail) return <LockedDashboard role="teacher" email={lockedEmail} />;
+
   if (loading) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-white text-slate-900">
@@ -299,7 +311,7 @@ export default function TeacherPage() {
               aria-current="page"
               className="rounded-lg bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700 transition hover:bg-blue-100"
             >
-              Dashboard
+              Teacher Dashboard
             </Link>
             <Link
               href="/teacher/classrooms"

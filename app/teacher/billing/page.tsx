@@ -28,7 +28,7 @@ export default function TeacherBilling() {
     finally { setBusy(false); }
   }
   return <main className="mx-auto max-w-xl px-6 py-16 text-slate-900">
-    <Link href="/teacher" className="text-sm font-semibold text-blue-700">← Dashboard</Link>
+    <Link href="/teacher" className="text-sm font-semibold text-blue-700">← Teacher Dashboard</Link>
     <h1 className="mt-8 text-3xl font-bold">Your teacher plan</h1>
     {billing ? <div className="mt-6 space-y-4 rounded-2xl border border-slate-200 p-6">
       <h2 className="text-xl font-bold">{TEACHER_PLANS[billing.plan]?.name || "Teacher account"}</h2>

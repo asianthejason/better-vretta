@@ -41,13 +41,15 @@ test("checkout and payment confirmation require authentication", async ({ reques
   }
 });
 
-test("email teacher signup stays on the signup page and a free coupon omits the card form", async ({ page }) => {
-  const user = { id: "00000000-0000-4000-8000-000000000010", aud: "authenticated", role: "authenticated", email: "signup@example.test", user_metadata: { signup_intent: "teacher" }, app_metadata: {}, created_at: new Date().toISOString() };
-  const payload = Buffer.from(JSON.stringify({ sub: user.id, exp: Math.floor(Date.now() / 1000) + 3600 })).toString("base64url");
-  const session = { access_token: `eyJhbGciOiJIUzI1NiJ9.${payload}.test`, refresh_token: "test-refresh-token", token_type: "bearer", expires_in: 3600, user };
-  await page.route("**/auth/v1/signup**", route => route.fulfill({ json: session }));
-  await page.route("**/auth/v1/user", route => route.fulfill({ json: user }));
-  await page.route("**/rest/v1/profiles?**", route => route.fulfill({ json: { role: "student" } }));
+test("unverified teacher signup opens a locked teacher dashboard", async ({ page }) => {
+  const user = { id: "00000000-0000-4000-8000-000000000010", aud: "authenticated", role: "authenticated", email: "signup@example.test", identities: [{ id: "identity-1" }], user_metadata: { signup_intent: "teacher" }, app_metadata: {}, created_at: new Date().toISOString() };
+  await page.route("**/auth/v1/signup**", route => route.fulfill({ json: { user, session: null } }));
+  await page.route("**/api/teacher-signup/checkout", async route => {
+    const headers = route.request().headers();
+    expect(headers["x-signup-user-id"]).toBe(user.id);
+    expect(headers["x-signup-nonce"]).toBeTruthy();
+    await route.fulfill({ json: { activated: true } });
+  });
   await page.goto("/login");
   await page.getByRole("button", { name: "Sign up", exact: true }).click();
   await page.getByRole("button", { name: "teacher", exact: true }).click();
@@ -56,8 +58,23 @@ test("email teacher signup stays on the signup page and a free coupon omits the 
   await page.getByPlaceholder("teacher@example.com").fill("signup@example.test");
   await page.getByPlaceholder("Enter a password").fill("Test-password-123!");
   await page.getByRole("button", { name: "Continue with free teacher signup" }).click();
-  await expect(page.getByRole("heading", { name: "Create your teacher account." })).toBeVisible();
-  await expect(page).toHaveURL(/\/login$/);
-  await expect(page.getByRole("button", { name: "Create teacher account — free" })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Credit card payment" })).toHaveCount(0);
+  await expect(page).toHaveURL(/\/teacher$/);
+  await expect(page.getByRole("navigation").getByText("Teacher Dashboard", { exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("Verify your email to unlock features")).toBeVisible();
+  await page.getByRole("button", { name: /Create Classroom/ }).hover({ force: true });
+  await expect(page.getByRole("tooltip").filter({ hasText: "Verify your email to unlock this feature." })).toBeVisible();
+});
+
+test("unverified student signup opens a locked student dashboard", async ({ page }) => {
+  const user = { id: "00000000-0000-4000-8000-000000000011", aud: "authenticated", role: "authenticated", email: "student@example.test", identities: [{ id: "identity-2" }], user_metadata: { signup_intent: "student" }, app_metadata: {}, created_at: new Date().toISOString() };
+  await page.route("**/auth/v1/signup**", route => route.fulfill({ json: { user, session: null } }));
+  await page.goto("/login");
+  await page.getByRole("button", { name: "Sign up", exact: true }).click();
+  await page.getByPlaceholder("teacher@example.com").fill("student@example.test");
+  await page.getByPlaceholder("Enter a password").fill("Test-password-123!");
+  await page.getByRole("button", { name: "Create Student Account" }).click();
+  await expect(page).toHaveURL(/\/student\/dashboard$/);
+  await expect(page.getByText("Student Dashboard", { exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("student@example.test")).toBeVisible();
+  await expect(page.getByRole("button", { name: /Join Classroom/ })).toBeDisabled();
 });

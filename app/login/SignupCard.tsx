@@ -8,8 +8,10 @@ import { loadStripe } from "@stripe/stripe-js/pure";
 
 export type SignupCardHandle = {
   collect: (email: string) => Promise<string>;
-  pay: (paymentMethod: string, token: string, plan: TeacherPlan) => Promise<void>;
+  pay: (paymentMethod: string, auth: SignupPaymentAuth, plan: TeacherPlan) => Promise<void>;
 };
+
+export type SignupPaymentAuth = { token: string } | { userId: string; nonce: string };
 
 const CardFields = forwardRef<SignupCardHandle, { plan: TeacherPlan }>(function CardFields({ plan }, ref) {
   const stripe = useStripe();
@@ -27,10 +29,16 @@ const CardFields = forwardRef<SignupCardHandle, { plan: TeacherPlan }>(function 
       if (result.error) throw new Error(result.error.message || "Please check your card details.");
       return result.paymentMethod.id;
     },
-    async pay(paymentMethod, token, selectedPlan) {
+    async pay(paymentMethod, auth, selectedPlan) {
       if (!stripe) throw new Error("Please reload the card form.");
       async function api(path: string, body: object) {
-        const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+        const headers = new Headers({ "Content-Type": "application/json" });
+        if ("token" in auth) headers.set("Authorization", `Bearer ${auth.token}`);
+        else {
+          headers.set("X-Signup-User-Id", auth.userId);
+          headers.set("X-Signup-Nonce", auth.nonce);
+        }
+        const response = await fetch(path, { method: "POST", headers, body: JSON.stringify(body) });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "Unable to process payment.");
         return data;

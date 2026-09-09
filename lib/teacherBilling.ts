@@ -37,10 +37,25 @@ export function appUrl() {
 
 export async function authenticatedAccount(request: Request) {
   const token = request.headers.get("authorization")?.match(/^Bearer (.+)$/i)?.[1];
-  if (!token) throw new BillingError("Please sign in to continue.", 401);
   const admin = adminClient();
-  const { data: { user }, error } = await admin.auth.getUser(token);
-  if (error || !user) throw new BillingError("Please sign in again to continue.", 401);
+  let user;
+  if (token) {
+    const result = await admin.auth.getUser(token);
+    if (result.error || !result.data.user) throw new BillingError("Please sign in again to continue.", 401);
+    user = result.data.user;
+  } else {
+    const userId = request.headers.get("x-signup-user-id");
+    const nonce = request.headers.get("x-signup-nonce");
+    if (!userId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(userId) || !nonce || nonce.length > 100) throw new BillingError("Please sign in to continue.", 401);
+    const result = await admin.auth.admin.getUserById(userId);
+    if (result.error || !result.data.user || result.data.user.user_metadata?.signup_nonce !== nonce
+      || result.data.user.user_metadata?.signup_intent !== "teacher") {
+      throw new BillingError("Teacher signup could not be verified.", 401);
+    }
+    const created = new Date(result.data.user.created_at).getTime();
+    if (!Number.isFinite(created) || Date.now() - created > 2 * 60 * 60 * 1000) throw new BillingError("Teacher signup expired. Please sign in to continue.", 401);
+    user = result.data.user;
+  }
   const { data: profile, error: profileError } = await admin.from("profiles").select("role").eq("id", user.id).single();
   if (profileError || !profile) throw new BillingError("Your account profile could not be loaded.", 503);
   // Also fail closed before accepting money if the required migration is missing.

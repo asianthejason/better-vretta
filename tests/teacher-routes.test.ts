@@ -49,6 +49,48 @@ test("free signup activates server-side without any Stripe configuration; client
   }
 });
 
+test("a recent unverified teacher signup can activate with its private signup nonce", async () => {
+  const originalFetch = globalThis.fetch;
+  const saved = { ...process.env };
+  const userId = "00000000-0000-4000-8000-000000000020";
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://billing-test.supabase.co";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
+  delete process.env.SUPABASE_SECRET_KEY;
+  delete process.env.STRIPE_SECRET_KEY;
+  let activations = 0;
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+    if (url.pathname === `/auth/v1/admin/users/${userId}`) return Response.json({ user: {
+      id: userId,
+      email: "pending@example.test",
+      created_at: new Date().toISOString(),
+      user_metadata: { signup_intent: "teacher", signup_nonce: "private-nonce" },
+    } });
+    if (url.pathname === "/rest/v1/profiles") return Response.json({ role: "student" });
+    if (url.pathname === "/rest/v1/teacher_entitlements") return Response.json(null);
+    if (url.pathname === "/rest/v1/teacher_checkout_attempts") return Response.json(null);
+    if (url.pathname === "/rest/v1/rpc/activate_teacher_plan") {
+      activations++;
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`Unexpected request: ${url.pathname}`);
+  };
+  const request = (nonce: string) => new Request("http://localhost/api/teacher-signup/checkout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Signup-User-Id": userId, "X-Signup-Nonce": nonce },
+    body: JSON.stringify({ couponCode: "webberteam", plan: "unlimited" }),
+  });
+  try {
+    assert.equal((await checkout(request("wrong-nonce"))).status, 401);
+    assert.equal((await checkout(request("private-nonce"))).status, 200);
+    assert.equal(activations, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+  }
+});
+
 test("renewals extend paid access, failed invoices do not, and cancellation syncs current Stripe status", async (t) => {
   const saved = { ...process.env };
   const originalFetch = globalThis.fetch;

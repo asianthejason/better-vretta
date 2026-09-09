@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabaseClient";
+import { clearPendingSignup, savePendingSignup } from "@/lib/pendingSignup";
 
 export type AccountRole = "teacher" | "student";
 
@@ -8,6 +9,14 @@ export async function requireAccountRole(requiredRole: AccountRole) {
     window.location.replace("/login");
     return null;
   }
+
+  if (!user.email_confirmed_at) {
+    const signupRole: AccountRole = user.user_metadata?.signup_intent === "teacher" ? "teacher" : "student";
+    savePendingSignup({ role: signupRole, email: user.email || "your email" });
+    window.location.replace(signupRole === "teacher" ? "/teacher" : "/student/dashboard");
+    return null;
+  }
+  clearPendingSignup();
 
   const { data: profile, error } = await supabase
     .from("profiles")

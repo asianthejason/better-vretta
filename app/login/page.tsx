@@ -7,6 +7,7 @@ import TeacherPrice from "./TeacherPrice";
 import { type TeacherPlan } from "@/lib/teacherPlans";
 import TeacherSignup from "@/app/teacher/signup/page";
 import SignupCard, { type SignupCardHandle } from "./SignupCard";
+import { clearPendingSignup, readPendingSignup, savePendingSignup } from "@/lib/pendingSignup";
 
 export default function LoginPage() {
   const [teacherSetup, setTeacherSetup] = useState(false);
@@ -21,8 +22,6 @@ export default function LoginPage() {
   const [message, setMessage] = useState("");
   const card = useRef<SignupCardHandle>(null);
   const inlineSignup = useRef(false);
-  const [awaitingConfirmation, setAwaitingConfirmation] = useState(false);
-  const [identityCreated, setIdentityCreated] = useState(false);
 
   useEffect(() => {
     let redirecting = false;
@@ -38,12 +37,12 @@ export default function LoginPage() {
       if (profile?.role) {
         redirecting = true;
         if (profile.role === "teacher") {
-          window.localStorage.removeItem("jretta_pending_role");
+          clearPendingSignup();
           window.location.replace("/teacher");
         } else if (pendingRole === "teacher" || user.user_metadata?.signup_intent === "teacher") {
           setTeacherSetup(true);
         } else {
-          window.localStorage.removeItem("jretta_pending_role");
+          clearPendingSignup();
           window.location.replace("/student/dashboard");
         }
       }
@@ -63,61 +62,50 @@ export default function LoginPage() {
     }
     if (password.length < 6) { setMessage("Enter a password with at least 6 characters."); return; }
     setBusy(true); setMessage("");
-    window.localStorage.setItem("jretta_pending_role", role);
     window.sessionStorage.setItem("jretta_teacher_coupon", role === "teacher" ? coupon : "");
     window.sessionStorage.setItem("jretta_teacher_plan", plan);
     try {
-      if (role === "teacher" && (amount > 0 || identityCreated)) {
-        inlineSignup.current = true;
-        let paymentMethod: string | null = null;
-        if (amount > 0) {
-          if (!card.current) throw new Error("The card form is unavailable. Please reload and try again.");
-          paymentMethod = await card.current.collect(email.trim());
-        }
-        let { data: { session } } = await supabase.auth.getSession();
-        if (!session) {
-          if (awaitingConfirmation) {
-            const result = await supabase.auth.signInWithPassword({ email: email.trim(), password });
-            if (result.error) throw new Error("Confirm your email first, then click the signup button again.");
-            session = result.data.session;
-          } else {
-            const result = await supabase.auth.signUp({ email: email.trim(), password, options: {
-              data: { role: "student", signup_intent: "teacher" },
-              emailRedirectTo: `${window.location.origin}/login?teacher=1`,
-            } });
-            if (result.error) throw result.error;
-            setIdentityCreated(true);
-            session = result.data.session;
-            if (!session) {
-              setAwaitingConfirmation(true);
-              setMessage("Check your email and confirm it in another tab, then return here and click the signup button again. You have not been charged.");
-              return;
-            }
-          }
-        }
-        if (!session) throw new Error("Please confirm your email before completing signup.");
-        if (paymentMethod && card.current) await card.current.pay(paymentMethod, session.access_token, plan);
+      inlineSignup.current = true;
+      const paymentMethod = role === "teacher" && amount > 0
+        ? await card.current?.collect(email.trim())
+        : null;
+      if (role === "teacher" && amount > 0 && !paymentMethod) throw new Error("The card form is unavailable. Please reload and try again.");
+
+      let pending = readPendingSignup();
+      let session = (await supabase.auth.getSession()).data.session;
+      if (!pending || pending.email.toLowerCase() !== email.trim().toLowerCase() || pending.role !== role || !pending.userId || !pending.nonce) {
+        const nonce = crypto.randomUUID();
+        const result = await supabase.auth.signUp({
+          email: email.trim(), password,
+          options: {
+            data: { role: "student", signup_intent: role, signup_nonce: nonce },
+            emailRedirectTo: `${window.location.origin}/login${role === "teacher" ? "?teacher=1" : ""}`,
+          },
+        });
+        if (result.error) throw result.error;
+        if (!result.data.user || result.data.user.identities?.length === 0) throw new Error("An account may already exist for this email. Try logging in instead.");
+        session = result.data.session;
+        pending = { role, email: email.trim(), userId: result.data.user.id, nonce };
+        savePendingSignup(pending);
+      }
+
+      if (role === "teacher") {
+        const auth = session ? { token: session.access_token } : { userId: pending.userId!, nonce: pending.nonce! };
+        if (paymentMethod && card.current) await card.current.pay(paymentMethod, auth, plan);
         else {
-          const response = await fetch("/api/teacher-signup/checkout", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify({ couponCode: coupon, plan }) });
+          const headers = new Headers({ "Content-Type": "application/json" });
+          if ("token" in auth) headers.set("Authorization", `Bearer ${auth.token}`);
+          else {
+            headers.set("X-Signup-User-Id", auth.userId);
+            headers.set("X-Signup-Nonce", auth.nonce);
+          }
+          const response = await fetch("/api/teacher-signup/checkout", { method: "POST", headers, body: JSON.stringify({ couponCode: coupon, plan }) });
           const result = await response.json();
           if (!response.ok || !result.activated) throw new Error(result.error || "Unable to activate your account.");
         }
-        window.localStorage.removeItem("jretta_pending_role");
-        window.sessionStorage.removeItem("jretta_teacher_coupon");
-        window.location.replace("/teacher");
-        return;
       }
-      const { error } = await supabase.auth.signUp({
-        email, password,
-        options: {
-          data: { role: "student", signup_intent: role },
-          emailRedirectTo: `${window.location.origin}/login${role === "teacher" ? "?teacher=1" : ""}`,
-        },
-      });
-      if (error) throw error;
-      setMessage(role === "teacher"
-        ? "Check your email to confirm your sign-in, then finish teacher signup. Teacher access begins after payment or a valid coupon."
-        : "Account created. Check your email if confirmation is required.");
+      window.sessionStorage.removeItem("jretta_teacher_coupon");
+      window.location.replace(role === "teacher" ? "/teacher" : "/student/dashboard");
     } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to create your account."); }
     finally { setBusy(false); }
   }
@@ -141,6 +129,7 @@ export default function LoginPage() {
 
   async function signIn() {
     if (!email.trim() || !password) { setMessage("Enter your email and password."); return; }
+    clearPendingSignup();
     const { error } = await supabase.auth.signInWithPassword({
       email,
       password,
@@ -173,11 +162,11 @@ export default function LoginPage() {
 
         <div className="mt-8 space-y-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
           <div className="grid grid-cols-2 gap-2 rounded-xl bg-slate-100 p-1">
-            <button type="button" disabled={busy || identityCreated} onClick={() => { inlineSignup.current = false; setMode("login"); }} className={`rounded-lg px-3 py-2.5 text-sm font-semibold ${mode === "login" ? "bg-white text-blue-700 shadow-sm" : "text-slate-500"}`}>Log in</button>
-            <button type="button" disabled={busy || identityCreated} onClick={() => { inlineSignup.current = false; setMode("signup"); }} className={`rounded-lg px-3 py-2.5 text-sm font-semibold ${mode === "signup" ? "bg-white text-blue-700 shadow-sm" : "text-slate-500"}`}>Sign up</button>
+            <button type="button" disabled={busy} onClick={() => { inlineSignup.current = false; setMode("login"); }} className={`rounded-lg px-3 py-2.5 text-sm font-semibold ${mode === "login" ? "bg-white text-blue-700 shadow-sm" : "text-slate-500"}`}>Log in</button>
+            <button type="button" disabled={busy} onClick={() => { inlineSignup.current = false; setMode("signup"); }} className={`rounded-lg px-3 py-2.5 text-sm font-semibold ${mode === "signup" ? "bg-white text-blue-700 shadow-sm" : "text-slate-500"}`}>Sign up</button>
           </div>
           {mode === "signup" && <div className="grid grid-cols-2 gap-2 rounded-xl border border-slate-200 p-1">
-            {(["student", "teacher"] as const).map((accountRole) => <button key={accountRole} type="button" disabled={busy || identityCreated} onClick={() => { inlineSignup.current = false; setRole(accountRole); }} className={`rounded-lg px-3 py-2.5 text-sm font-semibold capitalize ${role === accountRole ? "bg-white text-blue-700 shadow-sm" : "text-slate-500"}`}>{accountRole}</button>)}
+            {(["student", "teacher"] as const).map((accountRole) => <button key={accountRole} type="button" disabled={busy} onClick={() => { inlineSignup.current = false; setRole(accountRole); }} className={`rounded-lg px-3 py-2.5 text-sm font-semibold capitalize ${role === accountRole ? "bg-white text-blue-700 shadow-sm" : "text-slate-500"}`}>{accountRole}</button>)}
           </div>}
           {mode === "signup" && role === "teacher" && <fieldset disabled={busy}><TeacherPrice coupon={coupon} amount={amount} plan={plan} onChange={(code, total, selected) => { setCoupon(code); setAmount(total); setPlan(selected); }} /></fieldset>}
           <div>
@@ -187,7 +176,7 @@ export default function LoginPage() {
               value={email}
               onChange={(event) => setEmail(event.target.value)}
               id="signup-email"
-              disabled={busy || identityCreated}
+              disabled={busy}
               required
               type="email"
               placeholder="teacher@example.com"
@@ -201,7 +190,7 @@ export default function LoginPage() {
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               id="signup-password"
-              disabled={busy || identityCreated}
+              disabled={busy}
               required
               type="password"
               placeholder="Enter a password"
@@ -220,7 +209,7 @@ export default function LoginPage() {
           {message && <p role="status" className="text-sm text-slate-600">{message}</p>}
 
           <div className="flex items-center gap-3"><span className="h-px flex-1 bg-slate-200"/><span className="text-xs font-semibold uppercase tracking-wider text-slate-400">or</span><span className="h-px flex-1 bg-slate-200"/></div>
-          <button disabled={busy || identityCreated} onClick={continueWithGoogle} className="flex w-full items-center justify-center gap-3 rounded-xl border border-slate-300 bg-white px-6 py-3 font-semibold text-slate-700 hover:bg-slate-50">
+          <button disabled={busy} onClick={continueWithGoogle} className="flex w-full items-center justify-center gap-3 rounded-xl border border-slate-300 bg-white px-6 py-3 font-semibold text-slate-700 hover:bg-slate-50">
             <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white text-base font-bold text-blue-600 shadow ring-1 ring-slate-200">G</span>
             {mode === "login" ? "Continue with Google" : `Sign up with Google as ${role}`}
           </button>
