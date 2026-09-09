@@ -167,7 +167,6 @@ export default function ClassroomsPage() {
             Jretta
           </Link>
           <div className="flex items-center gap-2">
-            <Link href="/teacher/billing" className="rounded-lg px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50">Manage plan</Link>
             <Link
               href="/teacher"
               className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"
@@ -181,6 +180,7 @@ export default function ClassroomsPage() {
             >
               Classrooms
             </Link>
+            <Link href="/teacher/billing" className="rounded-lg px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50">Manage plan</Link>
             <Link
               href="/profile"
               className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"

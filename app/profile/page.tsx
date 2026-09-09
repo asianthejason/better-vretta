@@ -100,13 +100,19 @@ export default function ProfilePage() {
                   href="/teacher"
                   className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"
                 >
-                  Dashboard
+                  Teacher Dashboard
                 </Link>
                 <Link
                   href="/teacher/classrooms"
                   className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"
                 >
                   Classrooms
+                </Link>
+                <Link
+                  href="/teacher/billing"
+                  className="rounded-lg px-3 py-2 text-sm font-semibold text-blue-700 transition hover:bg-blue-50"
+                >
+                  Manage plan
                 </Link>
               </>
             )}
@@ -115,7 +121,7 @@ export default function ProfilePage() {
                 href="/student/dashboard"
                 className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"
               >
-                Dashboard
+                Student Dashboard
               </Link>
             )}
             <Link

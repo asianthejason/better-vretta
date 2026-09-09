@@ -889,6 +889,7 @@ export default function ResultsPage({
           <div className="flex items-center gap-2">
             <Link href="/teacher" className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950">Teacher Dashboard</Link>
             <Link href="/teacher/classrooms" className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950">Classrooms</Link>
+            <Link href="/teacher/billing" className="rounded-lg px-3 py-2 text-sm font-semibold text-blue-700 transition hover:bg-blue-50">Manage plan</Link>
             <Link href="/profile" className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950">Profile</Link>
             <button type="button" onClick={() => void signOut()} className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950">Sign Out</button>
           </div>

@@ -320,6 +320,12 @@ export default function TeacherPage() {
               Classrooms
             </Link>
             <Link
+              href="/teacher/billing"
+              className="rounded-lg px-3 py-2 text-sm font-semibold text-blue-700 transition hover:bg-blue-50"
+            >
+              Manage plan
+            </Link>
+            <Link
               href="/profile"
               className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"
             >
