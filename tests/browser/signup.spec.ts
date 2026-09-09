@@ -14,6 +14,8 @@ test("teacher signup applies a free coupon and removes Stripe payment messaging"
   await page.getByRole("button", { name: "teacher", exact: true }).click();
   await expect(page.getByText("$60.00 CAD", { exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Credit card payment" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sign up with Google as teacher" })).toBeDisabled();
+  await expect(page.getByText("Complete the card fields to continue with Google.")).toBeVisible();
   await page.getByRole("button", { name: "Pay $60 CAD & subscribe yearly" }).click();
   await expect(page.getByText("Enter a valid email address.")).toBeVisible();
   await expect(page.getByText(/Renews at \$60 CAD each year/)).toBeVisible();
@@ -27,8 +29,10 @@ test("teacher signup applies a free coupon and removes Stripe payment messaging"
   await expect(page.getByRole("region", { name: "Credit card payment" })).toHaveCount(0);
   await expect(page.getByRole("radio", { name: /Unlimited/ })).toHaveAttribute("aria-checked", "true");
   await expect(page.getByRole("button", { name: "Continue with free teacher signup" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sign up with Google as teacher" })).toBeEnabled();
   await page.getByRole("button", { name: "Remove coupon" }).click();
   await expect(page.getByText("$60.00 CAD", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sign up with Google as teacher" })).toBeDisabled();
   await page.getByRole("button", { name: "student", exact: true }).click();
   await expect(page.getByLabel("Coupon code")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Create Student Account" })).toBeVisible();

@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 import { isTeacherPlan, TEACHER_PLANS, type TeacherPlan } from "@/lib/teacherPlans";
 import TeacherPrice from "@/app/login/TeacherPrice";
 import TeacherPayment from "./TeacherPayment";
+import { payTeacherPlan } from "@/app/login/SignupCard";
 
 export default function TeacherSignup() {
   const [ready, setReady] = useState(false);
@@ -16,6 +17,7 @@ export default function TeacherSignup() {
   const [error, setError] = useState("");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [canceled, setCanceled] = useState(false);
+  const automaticPaymentStarted = useRef(false);
 
   async function request(path: string, body: object) {
     const { data: { session } } = await supabase.auth.getSession();
@@ -32,6 +34,7 @@ export default function TeacherSignup() {
   function finish() {
     window.localStorage.removeItem("jretta_pending_role");
     window.sessionStorage.removeItem("jretta_teacher_coupon");
+    window.sessionStorage.removeItem("jretta_teacher_payment_method");
     window.location.replace("/teacher");
   }
 
@@ -59,17 +62,41 @@ export default function TeacherSignup() {
         } else {
           const savedPlan = window.sessionStorage.getItem("jretta_teacher_plan");
           const selected = isTeacherPlan(savedPlan) ? savedPlan : "basic";
-          if (active) { setPlan(selected); setAmount(TEACHER_PLANS[selected].annualAmount); }
+          let quotedAmount: number = TEACHER_PLANS[selected].annualAmount;
+          let quotedPlan: TeacherPlan = selected;
+          if (active) { setPlan(selected); setAmount(quotedAmount); }
           const saved = window.sessionStorage.getItem("jretta_teacher_coupon") || "";
           if (saved) {
             const response = await fetch("/api/teacher-signup/quote", {
               method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ couponCode: saved, plan: selected }),
             });
             const quote = await response.json();
-            if (response.ok && active) { setCoupon(saved); setAmount(quote.amount); setPlan(quote.plan); }
+            if (response.ok) {
+              quotedAmount = quote.amount;
+              quotedPlan = quote.plan;
+              if (active) { setCoupon(saved); setAmount(quote.amount); setPlan(quote.plan); }
+            }
+          }
+          const savedPaymentMethod = window.sessionStorage.getItem("jretta_teacher_payment_method");
+          if (!automaticPaymentStarted.current && ((savedPaymentMethod && quotedAmount > 0) || quotedAmount === 0)) {
+            automaticPaymentStarted.current = true;
+            if (active) setBusy(true);
+            if (quotedAmount === 0) {
+              const result = await request("/api/teacher-signup/checkout", { couponCode: saved, plan: quotedPlan });
+              if (result?.activated) { finish(); return; }
+            } else {
+              const { data: { session } } = await supabase.auth.getSession();
+              if (!session) throw new Error("Your Google sign-in expired. Please sign in again.");
+              await payTeacherPlan(savedPaymentMethod!, { token: session.access_token }, quotedPlan);
+              finish();
+              return;
+            }
           }
         }
-      } catch (error) { if (active) setError(error instanceof Error ? error.message : "Unable to finish signup."); }
+      } catch (error) {
+        window.sessionStorage.removeItem("jretta_teacher_payment_method");
+        if (active) setError(error instanceof Error ? error.message : "Unable to finish signup.");
+      }
       finally { if (active) { setReady(true); setBusy(false); } }
     }
     void load();

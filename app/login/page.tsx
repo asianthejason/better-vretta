@@ -18,6 +18,7 @@ export default function LoginPage() {
   const [plan, setPlan] = useState<TeacherPlan>("basic");
   const [coupon, setCoupon] = useState("");
   const [amount, setAmount] = useState(6000);
+  const [cardComplete, setCardComplete] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const card = useRef<SignupCardHandle>(null);
@@ -105,6 +106,7 @@ export default function LoginPage() {
         }
       }
       window.sessionStorage.removeItem("jretta_teacher_coupon");
+      window.sessionStorage.removeItem("jretta_teacher_payment_method");
       window.location.replace(role === "teacher" ? "/teacher" : "/student/dashboard");
     } catch (error) { setMessage(error instanceof Error ? error.message : "Unable to create your account."); }
     finally { setBusy(false); }
@@ -112,24 +114,37 @@ export default function LoginPage() {
 
   async function continueWithGoogle() {
     inlineSignup.current = false;
-    if (mode === "signup") {
-      window.localStorage.setItem("jretta_pending_role", role);
-      window.sessionStorage.setItem("jretta_teacher_coupon", role === "teacher" ? coupon : "");
-    window.sessionStorage.setItem("jretta_teacher_plan", plan);
+    setMessage("");
+    setBusy(true);
+    try {
+      if (mode === "signup") {
+        window.localStorage.setItem("jretta_pending_role", role);
+        window.sessionStorage.setItem("jretta_teacher_coupon", role === "teacher" ? coupon : "");
+        window.sessionStorage.setItem("jretta_teacher_plan", plan);
+        if (role === "teacher" && amount > 0) {
+          if (!cardComplete || !card.current) throw new Error("Complete your card details before continuing with Google.");
+          const paymentMethod = await card.current.collect(email.trim());
+          window.sessionStorage.setItem("jretta_teacher_payment_method", paymentMethod);
+        }
+      }
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: `${window.location.origin}/login${mode === "signup" && role === "teacher" ? "?teacher=1" : ""}`,
+          queryParams: { prompt: "select_account" },
+        },
+      });
+      if (error) throw error;
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to continue with Google.");
+      setBusy(false);
     }
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo: `${window.location.origin}/login${mode === "signup" && role === "teacher" ? "?teacher=1" : ""}`,
-        queryParams: { prompt: "select_account" },
-      },
-    });
-    if (error) alert(error.message);
   }
 
   async function signIn() {
     if (!email.trim() || !password) { setMessage("Enter your email and password."); return; }
     clearPendingSignup();
+    window.sessionStorage.removeItem("jretta_teacher_payment_method");
     const { error } = await supabase.auth.signInWithPassword({
       email,
       password,
@@ -162,13 +177,13 @@ export default function LoginPage() {
 
         <div className="mt-8 space-y-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-[0_20px_60px_rgba(15,23,42,0.08)]">
           <div className="grid grid-cols-2 gap-2 rounded-xl bg-slate-100 p-1">
-            <button type="button" disabled={busy} onClick={() => { inlineSignup.current = false; setMode("login"); }} className={`rounded-lg px-3 py-2.5 text-sm font-semibold ${mode === "login" ? "bg-white text-blue-700 shadow-sm" : "text-slate-500"}`}>Log in</button>
-            <button type="button" disabled={busy} onClick={() => { inlineSignup.current = false; setMode("signup"); }} className={`rounded-lg px-3 py-2.5 text-sm font-semibold ${mode === "signup" ? "bg-white text-blue-700 shadow-sm" : "text-slate-500"}`}>Sign up</button>
+            <button type="button" disabled={busy} onClick={() => { inlineSignup.current = false; setCardComplete(false); window.sessionStorage.removeItem("jretta_teacher_payment_method"); setMode("login"); }} className={`rounded-lg px-3 py-2.5 text-sm font-semibold ${mode === "login" ? "bg-white text-blue-700 shadow-sm" : "text-slate-500"}`}>Log in</button>
+            <button type="button" disabled={busy} onClick={() => { inlineSignup.current = false; setCardComplete(false); window.sessionStorage.removeItem("jretta_teacher_payment_method"); setMode("signup"); }} className={`rounded-lg px-3 py-2.5 text-sm font-semibold ${mode === "signup" ? "bg-white text-blue-700 shadow-sm" : "text-slate-500"}`}>Sign up</button>
           </div>
           {mode === "signup" && <div className="grid grid-cols-2 gap-2 rounded-xl border border-slate-200 p-1">
-            {(["student", "teacher"] as const).map((accountRole) => <button key={accountRole} type="button" disabled={busy} onClick={() => { inlineSignup.current = false; setRole(accountRole); }} className={`rounded-lg px-3 py-2.5 text-sm font-semibold capitalize ${role === accountRole ? "bg-white text-blue-700 shadow-sm" : "text-slate-500"}`}>{accountRole}</button>)}
+            {(["student", "teacher"] as const).map((accountRole) => <button key={accountRole} type="button" disabled={busy} onClick={() => { inlineSignup.current = false; setCardComplete(false); window.sessionStorage.removeItem("jretta_teacher_payment_method"); setRole(accountRole); }} className={`rounded-lg px-3 py-2.5 text-sm font-semibold capitalize ${role === accountRole ? "bg-white text-blue-700 shadow-sm" : "text-slate-500"}`}>{accountRole}</button>)}
           </div>}
-          {mode === "signup" && role === "teacher" && <fieldset disabled={busy}><TeacherPrice coupon={coupon} amount={amount} plan={plan} onChange={(code, total, selected) => { setCoupon(code); setAmount(total); setPlan(selected); }} /></fieldset>}
+          {mode === "signup" && role === "teacher" && <fieldset disabled={busy}><TeacherPrice coupon={coupon} amount={amount} plan={plan} onChange={(code, total, selected) => { setCardComplete(total === 0); setCoupon(code); setAmount(total); setPlan(selected); }} /></fieldset>}
           <div>
             <label htmlFor="signup-email" className="text-sm font-semibold text-slate-700">Email</label>
             <input
@@ -197,7 +212,7 @@ export default function LoginPage() {
             />
           </div>
 
-          {mode === "signup" && role === "teacher" && amount > 0 && <SignupCard key={plan} ref={card} plan={plan} />}
+          {mode === "signup" && role === "teacher" && amount > 0 && <SignupCard key={plan} ref={card} plan={plan} onCompleteChange={setCardComplete} />}
 
           <button
             onClick={mode === "login" ? signIn : signUp}
@@ -209,10 +224,11 @@ export default function LoginPage() {
           {message && <p role="status" className="text-sm text-slate-600">{message}</p>}
 
           <div className="flex items-center gap-3"><span className="h-px flex-1 bg-slate-200"/><span className="text-xs font-semibold uppercase tracking-wider text-slate-400">or</span><span className="h-px flex-1 bg-slate-200"/></div>
-          <button disabled={busy} onClick={continueWithGoogle} className="flex w-full items-center justify-center gap-3 rounded-xl border border-slate-300 bg-white px-6 py-3 font-semibold text-slate-700 hover:bg-slate-50">
+          <button disabled={busy || (mode === "signup" && role === "teacher" && amount > 0 && !cardComplete)} onClick={continueWithGoogle} className="flex w-full items-center justify-center gap-3 rounded-xl border border-slate-300 bg-white px-6 py-3 font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
             <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white text-base font-bold text-blue-600 shadow ring-1 ring-slate-200">G</span>
             {mode === "login" ? "Continue with Google" : `Sign up with Google as ${role}`}
           </button>
+          {mode === "signup" && role === "teacher" && amount > 0 && !cardComplete && <p className="text-center text-xs text-slate-500">Complete the card fields to continue with Google.</p>}
         </div>
       </div>
     </main>
