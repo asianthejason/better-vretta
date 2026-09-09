@@ -26,5 +26,12 @@ export async function requireAccountRole(requiredRole: AccountRole) {
     return null;
   }
 
+  if (requiredRole === "teacher") {
+    const { data: plan, error: planError } = await supabase.rpc("teacher_plan_status");
+    if (planError || !plan?.active) {
+      window.location.replace("/teacher/billing");
+      return null;
+    }
+  }
   return user;
 }
