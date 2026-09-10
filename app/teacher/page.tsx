@@ -12,7 +12,6 @@ type Assessment = {
   id: string;
   title: string;
   description: string | null;
-  assessment_code: string;
   is_published: boolean;
   created_at: string;
   classroom_id?: string | null;
@@ -27,9 +26,7 @@ type AssessmentQuestion = {
   question_type: string;
   question_data: { overlayBoxes?: unknown[] } | null;
 };
-const UNASSIGNED_CLASSROOM = "__unassigned__";
-
-function generateAssessmentCode() {
+function generateInternalAssessmentKey() {
   const letters = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let code = "";
 
@@ -53,14 +50,7 @@ export default function TeacherPage() {
   const [copiedClassroomId, setCopiedClassroomId] = useState<string | null>(null);
   const [classrooms, setClassrooms] = useState<Classroom[]>([]);
   const [selectedClassroomId, setSelectedClassroomId] = useState("");
-  const unassignedAssessmentCount = assessments.filter(
-    (assessment) => !assessment.classroom_id
-  ).length;
-  const visibleAssessments = assessments.filter((assessment) =>
-    selectedClassroomId === UNASSIGNED_CLASSROOM
-      ? !assessment.classroom_id
-      : assessment.classroom_id === selectedClassroomId
-  );
+  const visibleAssessments = assessments.filter((assessment) => assessment.classroom_id === selectedClassroomId);
   const selectedClassroom = classrooms.find(
     (classroom) => classroom.id === selectedClassroomId
   );
@@ -182,7 +172,7 @@ export default function TeacherPage() {
       alert("You must be logged in.");
       return;
     }
-    if (!selectedClassroomId || selectedClassroomId === UNASSIGNED_CLASSROOM) {
+    if (!selectedClassroomId) {
       alert("Create or select a classroom before creating an assessment.");
       router.push("/teacher/classrooms");
       return;
@@ -193,7 +183,7 @@ export default function TeacherPage() {
       teacher_id: userId,
       title: "Untitled Assessment",
       description: null,
-      assessment_code: generateAssessmentCode(),
+      assessment_code: generateInternalAssessmentKey(),
       is_published: false,
       classroom_id: selectedClassroomId,
     };
@@ -264,9 +254,6 @@ export default function TeacherPage() {
         item.id === assessment.id ? { ...item, classroom_id: nextClassroomId } : item
       )
     );
-    if (selectedClassroomId === UNASSIGNED_CLASSROOM && nextClassroomId) {
-      setSelectedClassroomId(nextClassroomId);
-    }
     setMovingAssessmentId(null);
   }
 
@@ -359,11 +346,6 @@ export default function TeacherPage() {
                   {classroom.name}
                 </option>
               ))}
-              {unassignedAssessmentCount > 0 && (
-                <option value={UNASSIGNED_CLASSROOM}>
-                  Unassigned assessments ({unassignedAssessmentCount})
-                </option>
-              )}
             </select>
             {selectedClassroom && (
               <button
@@ -468,7 +450,6 @@ export default function TeacherPage() {
                         onChange={(event) => void moveAssessment(assessment, event.target.value)}
                         className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs font-semibold text-slate-800 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:cursor-wait disabled:bg-slate-100"
                       >
-                        <option value="">No classroom</option>
                         {classrooms.map((classroom) => (
                           <option key={classroom.id} value={classroom.id}>
                             {classroom.name}
@@ -476,11 +457,6 @@ export default function TeacherPage() {
                         ))}
                       </select>
                     </label>
-
-                    <div className="mt-2 flex items-center justify-between rounded-md bg-slate-50 px-2 py-1.5">
-                      <span className="text-[10px] font-medium uppercase tracking-wider text-slate-400">Student code</span>
-                      <span className="font-mono text-xs font-bold tracking-widest text-indigo-600">{assessment.assessment_code}</span>
-                    </div>
 
                     <div className="mt-2 grid grid-cols-2 divide-x divide-slate-200 rounded-md border border-slate-200 bg-white py-1.5 text-center">
                       <div className="px-1">
@@ -506,7 +482,7 @@ export default function TeacherPage() {
                       </Link>
 
                       <Link
-                        href={`/student/${assessment.assessment_code}?preview=1`}
+                        href={`/student/${assessment.id}?preview=1`}
                         target="_blank"
                         rel="noreferrer"
                         className="rounded-md border border-blue-200 bg-blue-50 px-2 py-1.5 text-center text-[10px] font-semibold text-blue-700 transition hover:bg-blue-100"

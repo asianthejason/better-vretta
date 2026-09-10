@@ -47,7 +47,7 @@ export default function StudentDashboard() {
 
     const [classroomResult, assignmentResult, accessResult] = await Promise.all([
       supabase.from("classrooms").select("id,name,created_at").in("id", classroomIds).order("created_at", { ascending: true }),
-      supabase.from("classroom_assessments").select("classroom_id,assessment_id,allow_all_students,assessments(title,description,assessment_code,is_published)").in("classroom_id", classroomIds),
+      supabase.from("classroom_assessments").select("classroom_id,assessment_id,allow_all_students,assessments(title,description,is_published)").in("classroom_id", classroomIds),
       supabase.from("assessment_student_access").select("classroom_id,assessment_id,allowed").eq("student_id", user.id).in("classroom_id", classroomIds),
     ]);
     const error = classroomResult.error || assignmentResult.error || accessResult.error;
@@ -110,7 +110,7 @@ export default function StudentDashboard() {
       {!loading && classrooms.length > 0 && <section className="mt-14 border-t border-slate-200 pt-10">
         <h2 className="text-2xl font-bold">All assigned assessments</h2><p className="mt-2 text-sm text-slate-500">Everything currently available to you across your classrooms.</p>
         {assignments.length === 0 ? <div className="mt-6 rounded-2xl border border-dashed border-slate-300 p-10 text-center text-slate-500">No assessments have been assigned to you yet.</div> : <div className="mt-6 grid gap-4 md:grid-cols-2">
-          {assignments.map((assignment) => assignment.assessments && <div key={`${assignment.classroom_id}-${assignment.assessment_id}`} className="rounded-2xl border border-slate-200 p-6 shadow-sm"><h3 className="text-xl font-bold">{assignment.assessments.title}</h3>{assignment.assessments.description && <p className="mt-2 line-clamp-2 text-sm leading-6 text-slate-500">{assignment.assessments.description}</p>}<Link href={`/student/${assignment.assessments.assessment_code}`} className="mt-6 inline-flex rounded-xl bg-blue-600 px-5 py-3 font-semibold text-white hover:bg-blue-700">Open assessment</Link></div>)}
+          {assignments.map((assignment) => assignment.assessments && <div key={`${assignment.classroom_id}-${assignment.assessment_id}`} className="rounded-2xl border border-slate-200 p-6 shadow-sm"><h3 className="text-xl font-bold">{assignment.assessments.title}</h3>{assignment.assessments.description && <p className="mt-2 line-clamp-2 text-sm leading-6 text-slate-500">{assignment.assessments.description}</p>}<Link href={`/student/${assignment.assessment_id}`} className="mt-6 inline-flex rounded-xl bg-blue-600 px-5 py-3 font-semibold text-white hover:bg-blue-700">Open assessment</Link></div>)}
         </div>}
       </section>}
     </div>

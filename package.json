@@ -8,8 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test:billing": "node --conditions=react-server --import tsx --test tests/teacher-billing.test.ts tests/teacher-routes.test.ts",
-    "test:assessment-live": "node --import tsx --test tests/assessment-live-sessions.test.ts",
-    "test:student": "node --import tsx --test tests/student-classrooms.test.ts",
+    "test:assessment-live": "node --import tsx --test tests/assessment-live-sessions.test.ts tests/assessment-presence.test.ts tests/lockdown-monitor.test.ts",
+    "test:student": "node --import tsx --test tests/student-classrooms.test.ts tests/student-name-sort.test.ts tests/drag-drop-sequence.test.ts tests/question-types-migration.test.ts tests/account-image-library.test.ts",
     "test:signup": "playwright test"
   },
   "dependencies": {

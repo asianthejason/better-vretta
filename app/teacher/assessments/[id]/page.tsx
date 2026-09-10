@@ -9,11 +9,12 @@ import {
   type PointerEvent,
 } from "react";
 import Link from "next/link";
+import LocationCanvasElementContent from "@/app/components/LocationCanvasElementContent";
 import { supabase } from "@/lib/supabaseClient";
 import { requireAccountRole } from "@/lib/roleGuard";
 import RichTextEditor from "./RichTextEditor";
-import DragDropEditor from "./DragDropEditor";
-import { createDefaultDragDropData, normalizeDragDropData, type DragDropData } from "@/lib/dragDrop";
+import DragDropEditor, { DragDropPresetPicker } from "./DragDropEditor";
+import { createDefaultDragDropData, getLocationBoxSize, getSequenceTargetCount, normalizeDragDropData, type DragDropData } from "@/lib/dragDrop";
 
 type QuestionType =
   | "multiple-choice"
@@ -25,6 +26,7 @@ type QuestionType =
   | "sorting-category";
 
 type OverlayAnswerMode = "text-entry" | "drag-drop-text" | "drag-drop-image";
+type SplitEditorTab = "left" | "right";
 type QuestionLayout = "standard" | "split";
 type LeftPanelTable = {
   enabled: boolean;
@@ -94,7 +96,6 @@ type Assessment = {
   id: string;
   title: string;
   description: string | null;
-  assessment_code: string;
   is_published: boolean;
 };
 
@@ -108,6 +109,14 @@ type ReferenceBuild = {
   image_url: string;
   image_path: string;
   table_data: LeftPanelTable;
+};
+
+type AccountImage = {
+  id: string;
+  owner_id: string;
+  image_url: string;
+  image_path: string;
+  label: string;
 };
 
 type Question = {
@@ -257,6 +266,29 @@ function richHtmlToPlainText(html: string) {
   return container.innerText.replace(/\u200B/g, "").trim();
 }
 
+function clearImageReference<T>(value: T, imageUrl: string, imagePath: string): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => clearImageReference(item, imageUrl, imagePath)) as T;
+  }
+  if (!value || typeof value !== "object") return value;
+
+  const source = value as Record<string, unknown>;
+  const matches =
+    source.imageUrl === imageUrl ||
+    source.imagePath === imagePath ||
+    source.image_url === imageUrl ||
+    source.image_path === imagePath ||
+    source.backgroundImageUrl === imageUrl ||
+    source.backgroundImagePath === imagePath;
+  const result: Record<string, unknown> = {};
+  Object.entries(source).forEach(([key, child]) => {
+    result[key] = matches && ["imageUrl", "imagePath", "image_url", "image_path", "backgroundImageUrl", "backgroundImagePath"].includes(key)
+      ? ""
+      : clearImageReference(child, imageUrl, imagePath);
+  });
+  return result as T;
+}
+
 function cleanFileName(fileName: string) {
   return fileName
     .toLowerCase()
@@ -281,6 +313,52 @@ function leftPanelTableHasContent(table: LeftPanelTable | undefined) {
 
 function ChoiceTablePreview({ table }: { table: ChoiceTable }) {
   return <div className="mt-6 overflow-x-auto"><table className={`w-full border-collapse text-left ${table.hasBorder ? "border border-slate-300" : ""}`}><thead><tr><th className={`w-16 px-3 py-3 text-center ${table.hasBorder ? "border border-slate-300" : ""}`}>Row</th>{table.headers.map((header, index) => <th key={index} className={`px-4 py-3 font-semibold ${table.hasBorder ? "border border-slate-300" : ""}`}>{header}</th>)}</tr></thead><tbody>{table.rows.map((row, rowIndex) => <tr key={rowIndex} className="hover:bg-blue-50/50"><td className={`px-3 py-3 text-center ${table.hasBorder ? "border border-slate-300" : ""}`}><span className="inline-block h-6 w-6 rounded-full border-2 border-slate-500" /></td>{row.map((cell, cellIndex) => <td key={cellIndex} className={`px-4 py-3 ${table.hasBorder ? "border border-slate-300" : ""}`}>{table.cellImages?.[rowIndex]?.[cellIndex]?.imageUrl && <img src={table.cellImages[rowIndex][cellIndex].imageUrl} alt="" className="mx-auto mb-2 max-h-40 max-w-full object-contain" />}<div className="rich-text-content" dangerouslySetInnerHTML={{ __html: cell }} /></td>)}</tr>)}</tbody></table></div>;
+}
+
+function SequencePreview({ data, itemPreviewUrls = {} }: { data: DragDropData; itemPreviewUrls?: Record<string, string> }) {
+  return (
+    <div className="overflow-x-auto pb-2">
+      <div className="inline-grid w-max auto-cols-[minmax(8rem,1fr)] grid-rows-[repeat(2,minmax(0,1fr))] gap-x-3 gap-y-6">
+        {data.items.map((item, index) => (
+          <div key={item.id} style={{ gridColumn: index + 1, gridRow: 1 }} className="box-border flex h-full w-full flex-col items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-center text-sm font-medium text-black shadow-sm">
+            {(itemPreviewUrls[item.id] || item.imageUrl) && <img src={itemPreviewUrls[item.id] || item.imageUrl} alt="" className="mb-2 max-h-24 max-w-32 object-contain" />}
+            {item.content || "Untitled item"}
+          </div>
+        ))}
+        {Array.from({ length: getSequenceTargetCount(data) }, (_, position) => (
+          <div key={position} style={{ gridColumn: position + 1, gridRow: 2 }} className="box-border h-full min-h-14 w-full border-2 border-dashed border-slate-400 bg-white" />
+        ))}
+      </div>
+      <div className="mt-4 grid grid-cols-2 gap-8 text-base font-bold text-slate-900">
+        <p className="max-w-xs whitespace-pre-line text-left">{data.sequenceStartLabel}</p>
+        <p className="ml-auto max-w-xs whitespace-pre-line text-right">{data.sequenceEndLabel}</p>
+      </div>
+    </div>
+  );
+}
+
+function LocationPreview({ data, itemPreviewUrls = {} }: { data: DragDropData; itemPreviewUrls?: Record<string, string> }) {
+  const previewItems = data.items.map((item) => ({ ...item, imageUrl: itemPreviewUrls[item.id] || item.imageUrl }));
+  const boxSize = getLocationBoxSize(previewItems);
+  return (
+    <div className={`relative overflow-hidden border border-slate-300 bg-slate-100 ${data.backgroundImageUrl ? "" : "aspect-video"}`}>
+      {data.backgroundImageUrl ? <img src={data.backgroundImageUrl} alt="Match locations background" className="block h-auto w-full object-contain" /> : <div className="absolute inset-0 grid place-items-center text-sm text-slate-500">Location canvas</div>}
+      <div className="absolute inset-0">
+        {(data.canvasElements || []).map((element) => <div key={element.id} className="absolute" style={{ left: `${element.x}%`, top: `${element.y}%`, width: `${element.width}%`, height: `${element.height}%` }}><LocationCanvasElementContent element={element} /></div>)}
+        <div className={`absolute z-30 flex w-max gap-2 ${data.choiceBankDirection === "vertical" ? "flex-col" : "flex-row"}`} style={{ left: `${data.choiceBankX ?? 8}%`, top: `${data.choiceBankY ?? 6}%` }}>
+          {previewItems.map((item) => <div key={item.id} style={boxSize} className="box-border flex shrink-0 flex-col items-center justify-center rounded border border-slate-400 bg-white px-3 py-2 text-center text-sm font-medium text-black shadow-sm">
+            {item.imageUrl && <img src={item.imageUrl} alt="" className="mb-1 min-h-0 max-h-20 max-w-28 flex-1 object-contain" />}
+            <span>{item.content || "Untitled choice"}</span>
+          </div>)}
+        </div>
+        {data.zones.map((zone, index) => (
+          <div key={zone.id} className={`absolute z-20 box-border flex items-center justify-center bg-white/75 text-center text-xs font-semibold text-slate-800 ${data.settings.showZoneOutlines ? "border-2 border-dashed border-slate-500" : "border border-transparent"}`} style={{ left: `${zone.x ?? 10}%`, top: `${zone.y ?? 10}%`, ...boxSize }}>
+            {data.settings.showTargetLabels ? <span className="pointer-events-none absolute bottom-full left-1/2 mb-1 -translate-x-1/2 whitespace-nowrap text-sm font-bold text-slate-900">{zone.label || `Target ${index + 1}`}</span> : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function SavedQuestionStudentPreview({
@@ -369,21 +447,21 @@ function SavedQuestionStudentPreview({
           const data = normalizeDragDropData(question.question_data.dragDrop);
           return (
             <div className="mt-6 space-y-4">
-              <div className={`flex flex-wrap gap-3 ${data.preset === "categories" ? "justify-center" : ""}`}>
+              {data.preset !== "sequence" && data.preset !== "locations" && <div className={`flex flex-wrap gap-3 ${data.preset === "categories" ? "justify-center" : ""}`}>
                 {data.items.map((item) => (
-                  <div key={item.id} className={`${data.preset === "categories" ? "min-w-28 rounded-none border-slate-500 px-4 py-2 text-center font-serif font-semibold" : "rounded-lg border-slate-300 px-3 py-2 text-sm font-medium shadow-sm"} border bg-white text-slate-900`}>
+                  <div key={item.id} style={data.preset === "locations" ? getLocationBoxSize(data.items) : undefined} className={`${data.preset === "categories" ? "min-w-28 rounded-none border-slate-500 px-4 py-2 text-center font-serif font-semibold" : data.preset === "locations" ? "flex shrink-0 flex-col items-center justify-center rounded border-slate-400 px-3 py-2 text-center text-sm font-medium shadow-sm" : "rounded-lg border-slate-300 px-3 py-2 text-sm font-medium shadow-sm"} box-border border bg-white text-slate-900`}>
                     {item.imageUrl && <img src={item.imageUrl} alt="" className="mb-2 h-16 max-w-28 object-contain" />}
                     {item.content}
                   </div>
                 ))}
-              </div>
-              <div className={`grid ${data.preset === "categories" ? "gap-2 sm:grid-cols-2" : "gap-3"}`}>
+              </div>}
+              {data.preset === "sequence" ? <SequencePreview data={data} /> : data.preset === "locations" ? <LocationPreview data={data} /> : <div className={`grid ${data.preset === "categories" ? "gap-2 sm:grid-cols-2" : "gap-3"}`}>
                 {data.zones.map((zone, zoneIndex) => (
                   <div key={zone.id} className={`${data.preset === "categories" ? "min-h-40 rounded-none border border-slate-500 bg-white" : "min-h-20 rounded-xl border-2 border-dashed border-blue-200 bg-blue-50/40 p-3"}`}>
                     <div className={`${data.preset === "categories" ? "border-b border-slate-500 px-3 py-2 text-center font-serif font-semibold text-slate-900" : "text-sm font-semibold text-blue-800"}`}>{zone.label || `Position ${zoneIndex + 1}`}</div>
                   </div>
                 ))}
-              </div>
+              </div>}
             </div>
           );
         })()}
@@ -450,18 +528,20 @@ export default function AssessmentEditorPage({
   const [titleDraft, setTitleDraft] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
   const [savingTitle, setSavingTitle] = useState(false);
-  const [codeCopied, setCodeCopied] = useState(false);
 
   const [questionType, setQuestionType] =
     useState<QuestionType>("multiple-choice");
   const [dragDropData, setDragDropData] = useState<DragDropData>(() => createDefaultDragDropData());
   const [selectedDragDropItemFiles, setSelectedDragDropItemFiles] = useState<Record<string, File>>({});
   const [dragDropItemPreviewUrls, setDragDropItemPreviewUrls] = useState<Record<string, string>>({});
+  const selectedDragDropItemFilesRef = useRef<Record<string, File>>({});
+  const uploadedDragDropFilesRef = useRef(new WeakMap<File, { imageUrl: string; imagePath: string }>());
 
   const [prompt, setPrompt] = useState("");
   const [promptHtml, setPromptHtml] = useState("");
   const [questionLayout, setQuestionLayout] =
     useState<QuestionLayout>("standard");
+  const [splitEditorTab, setSplitEditorTab] = useState<SplitEditorTab>("left");
   const [leftPanelTitle, setLeftPanelTitle] = useState("");
   const [leftPanelTopContent, setLeftPanelTopContent] = useState("");
   const [leftPanelContent, setLeftPanelContent] = useState("");
@@ -475,6 +555,8 @@ export default function AssessmentEditorPage({
   const [referenceBuilds, setReferenceBuilds] = useState<ReferenceBuild[]>([]);
   const [referenceBuildName, setReferenceBuildName] = useState("");
   const [savingReferenceBuild, setSavingReferenceBuild] = useState(false);
+  const [deletingReferenceBuild, setDeletingReferenceBuild] = useState(false);
+  const [accountImages, setAccountImages] = useState<AccountImage[]>([]);
   const [leftPanelTableEnabled, setLeftPanelTableEnabled] = useState(false);
   const [leftPanelTableHasBorder, setLeftPanelTableHasBorder] = useState(true);
   const [leftPanelTableCells, setLeftPanelTableCells] = useState<string[][]>([
@@ -577,14 +659,16 @@ export default function AssessmentEditorPage({
   const uploadedImages = useMemo(() => {
     const images = new Map<
       string,
-      { url: string; path: string; label: string }
+      { id?: string; url: string; path: string; label: string }
     >();
 
-    function addImage(url: string | undefined, path: string | undefined, label: string) {
+    function addImage(url: string | undefined, path: string | undefined, label: string, id?: string) {
       if (url && !images.has(url)) {
-        images.set(url, { url, path: path || "", label });
+        images.set(url, { id, url, path: path || "", label });
       }
     }
+
+    accountImages.forEach((image) => addImage(image.image_url, image.image_path, image.label, image.id));
 
     questions.forEach((question, questionIndex) => {
       const label = `Question ${questionIndex + 1}`;
@@ -604,6 +688,14 @@ export default function AssessmentEditorPage({
       question.question_data.dragDrop?.items?.forEach((item, itemIndex) =>
         addImage(item.imageUrl, item.imagePath, `${label} · Drag item ${itemIndex + 1}`)
       );
+      question.question_data.dragDrop?.canvasElements?.forEach((element, elementIndex) => {
+        if (element.type === "image") addImage(element.imageUrl, element.imagePath, `${label} · Canvas image ${elementIndex + 1}`);
+      });
+      addImage(
+        question.question_data.dragDrop?.backgroundImageUrl,
+        question.question_data.dragDrop?.backgroundImagePath,
+        `${label} · Location background`
+      );
       question.question_data.draggableImageChoices?.forEach((choice) =>
         addImage(choice.imageUrl, choice.imagePath, `${label} · ${choice.label}`)
       );
@@ -616,8 +708,20 @@ export default function AssessmentEditorPage({
       );
     });
 
+    Object.entries(selectedDragDropItemFiles).forEach(([itemId, file]) => {
+      const previewUrl = dragDropItemPreviewUrls[itemId];
+      const itemIndex = dragDropData.items.findIndex((item) => item.id === itemId);
+      if (previewUrl) {
+        addImage(
+          previewUrl,
+          "",
+          `Current question · ${dragDropData.items[itemIndex]?.content || file.name || `Item ${itemIndex + 1}`}`
+        );
+      }
+    });
+
     return Array.from(images.values());
-  }, [questions]);
+  }, [accountImages, dragDropData.items, dragDropItemPreviewUrls, questions, selectedDragDropItemFiles]);
 
   useEffect(() => {
     async function getParams() {
@@ -745,10 +849,20 @@ export default function AssessmentEditorPage({
       console.error("Could not load reference library:", referenceError.message);
     }
 
+    const { data: imageData, error: imageError } = await supabase
+      .from("account_images")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (imageError) {
+      console.error("Could not load account image library:", imageError.message);
+    }
+
     setAssessment(assessmentData);
     setTitleDraft(assessmentData.title);
     setQuestions((questionData || []) as Question[]);
     setReferenceBuilds((referenceData || []) as ReferenceBuild[]);
+    setAccountImages((imageData || []) as AccountImage[]);
     setLoading(false);
   }
 
@@ -783,20 +897,6 @@ export default function AssessmentEditorPage({
     setSavingTitle(false);
   }
 
-  async function copyStudentCode() {
-    if (!assessment) {
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(assessment.assessment_code);
-      setCodeCopied(true);
-      window.setTimeout(() => setCodeCopied(false), 2000);
-    } catch {
-      alert("Could not copy the code. Please copy it manually.");
-    }
-  }
-
   function updateRichPrompt(html: string) {
     setPromptHtml(html);
     const container = document.createElement("div");
@@ -807,11 +907,13 @@ export default function AssessmentEditorPage({
   function resetQuestionForm() {
     setQuestionType("multiple-choice");
     setDragDropData(createDefaultDragDropData());
+    selectedDragDropItemFilesRef.current = {};
     setSelectedDragDropItemFiles({});
     setDragDropItemPreviewUrls({});
     setPrompt("");
     setPromptHtml("");
     setQuestionLayout("standard");
+    setSplitEditorTab("left");
     setLeftPanelTitle("");
     setLeftPanelTopContent("");
     setLeftPanelContent("");
@@ -976,10 +1078,10 @@ export default function AssessmentEditorPage({
             ) : (
               <div className="grid max-h-64 grid-cols-2 gap-2 overflow-y-auto">
                 {uploadedImages.map((image) => (
-                  <button
-                    key={image.url}
-                    type="button"
-                    onClick={() => {
+                  <div key={image.url} className="group relative">
+                    <button
+                      type="button"
+                      onClick={() => {
                       setMultipleChoiceImages((current) =>
                         current.map((currentImage, imageIndex) =>
                           imageIndex === index
@@ -997,18 +1099,14 @@ export default function AssessmentEditorPage({
                         [index]: image.url,
                       }));
                       setMultipleChoiceUploadedPickerIndex(null);
-                    }}
-                    className="overflow-hidden rounded-md border border-slate-700 bg-slate-900 p-1.5 text-left hover:border-blue-500"
-                  >
-                    <img
-                      src={image.url}
-                      alt={image.label}
-                      className="h-20 w-full rounded bg-white object-contain"
-                    />
-                    <span className="mt-1 block truncate text-[10px] text-slate-400">
-                      {image.label}
-                    </span>
-                  </button>
+                      }}
+                      className="w-full overflow-hidden rounded-md border border-slate-700 bg-slate-900 p-1.5 text-left hover:border-blue-500"
+                    >
+                      <img src={image.url} alt={image.label} className="h-20 w-full rounded bg-white object-contain" />
+                      <span className="mt-1 block truncate text-[10px] text-slate-400">{image.label}</span>
+                    </button>
+                    {image.id && <button type="button" onClick={() => void deleteAccountImage({ id: image.id!, image_url: image.url, image_path: image.path, label: image.label })} className="absolute right-1 top-1 grid h-6 w-6 place-items-center rounded-full bg-red-600 text-xs font-bold text-white opacity-0 shadow transition hover:bg-red-700 focus:opacity-100 group-hover:opacity-100" aria-label={`Delete ${image.label} from existing uploads`}>×</button>}
+                  </div>
                 ))}
               </div>
             )}
@@ -1106,7 +1204,34 @@ export default function AssessmentEditorPage({
         alert("Add at least one complete draggable item.");
         return false;
       }
-      if (dragDropData.zones.length < 1 || dragDropData.zones.some((zone) => !zone.label.trim())) {
+      if (dragDropData.preset === "sequence") {
+        const targetCount = getSequenceTargetCount(dragDropData);
+        const correctOrder = dragDropData.zones[0]?.correctItemIds.slice(0, targetCount) || [];
+        const itemIds = new Set(dragDropData.items.map((item) => item.id));
+        if (dragDropData.items.length < targetCount) {
+          alert(`Add at least ${targetCount} draggable choices for ${targetCount} drop targets.`);
+          return false;
+        }
+        if (correctOrder.length !== targetCount || correctOrder.some((itemId) => !itemId || !itemIds.has(itemId)) || new Set(correctOrder).size !== targetCount) {
+          alert("Assign one different draggable choice to every correct position.");
+          return false;
+        }
+      } else if (dragDropData.preset === "locations") {
+        const itemIds = new Set(dragDropData.items.map((item) => item.id));
+        const correctItemIds = dragDropData.zones.map((zone) => zone.correctItemIds[0]);
+        if (dragDropData.zones.length < 1) {
+          alert("Add at least one location target.");
+          return false;
+        }
+        if (correctItemIds.some((itemId) => !itemId || !itemIds.has(itemId))) {
+          alert("Choose one correct draggable choice for every location target.");
+          return false;
+        }
+        if (new Set(correctItemIds).size !== correctItemIds.length) {
+          alert("Each location target needs a different correct choice.");
+          return false;
+        }
+      } else if (dragDropData.zones.length < 1 || dragDropData.zones.some((zone) => !zone.label.trim())) {
         alert("Add and name at least one drop target.");
         return false;
       }
@@ -1287,6 +1412,7 @@ export default function AssessmentEditorPage({
   }
 
   function handleLeftPanelImageChange(file: File | null) {
+    setSelectedReferenceQuestionId("");
     setSelectedLeftPanelImageFile(file);
 
     if (!file) {
@@ -1311,6 +1437,24 @@ export default function AssessmentEditorPage({
     setLeftPanelTableEnabled(source.table_data?.enabled || false);
     setLeftPanelTableHasBorder(source.table_data?.hasBorder ?? true);
     setLeftPanelTableCells(source.table_data?.cells?.length ? source.table_data.cells.map((row) => [...row]) : [["", ""], ["", ""]]);
+  }
+
+  async function deleteSelectedReferenceBuild() {
+    const referenceId = selectedReferenceQuestionId;
+    const reference = referenceBuilds.find((item) => item.id === referenceId);
+    if (!reference || !window.confirm(`Delete the saved reference “${reference.name}”?`)) return;
+
+    setDeletingReferenceBuild(true);
+    try {
+      const { error } = await supabase.from("reference_builds").delete().eq("id", referenceId);
+      if (error) throw new Error(error.message);
+      setReferenceBuilds((current) => current.filter((item) => item.id !== referenceId));
+      setSelectedReferenceQuestionId("");
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Could not delete the saved reference.");
+    } finally {
+      setDeletingReferenceBuild(false);
+    }
   }
 
   async function saveReferenceBuild() {
@@ -1370,6 +1514,8 @@ export default function AssessmentEditorPage({
   }
 
   function handleDragDropItemImageChange(itemId: string, file: File | null) {
+    if (file) selectedDragDropItemFilesRef.current[itemId] = file;
+    else delete selectedDragDropItemFilesRef.current[itemId];
     setSelectedDragDropItemFiles((current) => {
       const next = { ...current };
       if (file) next[itemId] = file;
@@ -1382,18 +1528,60 @@ export default function AssessmentEditorPage({
       else delete next[itemId];
       return next;
     });
+    if (!file) return;
+
+    void (async () => {
+      setUploadingImage(true);
+      try {
+        const filePath = `${assessmentId}/drag-drop-library-${Date.now()}-${itemId}-${cleanFileName(file.name)}`;
+        const { error } = await supabase.storage.from("question-images").upload(filePath, file, { upsert: false });
+        if (error) throw new Error(error.message);
+        const { data } = supabase.storage.from("question-images").getPublicUrl(filePath);
+        const uploadedImage = { imageUrl: data.publicUrl, imagePath: filePath };
+        await rememberAccountImage(uploadedImage.imageUrl, uploadedImage.imagePath, file.name);
+        uploadedDragDropFilesRef.current.set(file, uploadedImage);
+
+        // The image stays in the account library even when the user removed or
+        // replaced it while this upload was finishing.
+        if (selectedDragDropItemFilesRef.current[itemId] !== file) return;
+        delete selectedDragDropItemFilesRef.current[itemId];
+        setSelectedDragDropItemFiles((current) => {
+          if (current[itemId] !== file) return current;
+          const next = { ...current };
+          delete next[itemId];
+          return next;
+        });
+        setDragDropItemPreviewUrls((current) => ({ ...current, [itemId]: uploadedImage.imageUrl }));
+        setDragDropData((current) => ({
+          ...current,
+          items: current.items.map((item) => item.id === itemId ? { ...item, ...uploadedImage } : item),
+        }));
+      } catch (error) {
+        alert(error instanceof Error ? error.message : "Could not upload the image.");
+      } finally {
+        setUploadingImage(false);
+      }
+    })();
   }
 
   function chooseDragDropItemImage(itemId: string, image: { url: string; path: string }) {
+    const pendingSourceItemId = Object.entries(dragDropItemPreviewUrls).find(
+      ([sourceItemId, previewUrl]) => previewUrl === image.url && selectedDragDropItemFiles[sourceItemId]
+    )?.[0];
+    const pendingFile = pendingSourceItemId ? selectedDragDropItemFiles[pendingSourceItemId] : undefined;
+
     setSelectedDragDropItemFiles((current) => {
       const next = { ...current };
-      delete next[itemId];
+      if (pendingFile) next[itemId] = pendingFile;
+      else delete next[itemId];
       return next;
     });
+    if (pendingFile) selectedDragDropItemFilesRef.current[itemId] = pendingFile;
+    else delete selectedDragDropItemFilesRef.current[itemId];
     setDragDropItemPreviewUrls((current) => ({ ...current, [itemId]: image.url }));
     setDragDropData((current) => ({
       ...current,
-      items: current.items.map((item) => item.id === itemId ? { ...item, imageUrl: image.url, imagePath: image.path } : item),
+      items: current.items.map((item) => item.id === itemId ? { ...item, imageUrl: pendingFile ? "" : image.url, imagePath: pendingFile ? "" : image.path } : item),
     }));
   }
 
@@ -1405,12 +1593,82 @@ export default function AssessmentEditorPage({
     }));
   }
 
+  async function rememberAccountImage(imageUrl: string, imagePath: string, label: string) {
+    if (!imageUrl || !imagePath) return;
+    const { data: authData } = await supabase.auth.getUser();
+    if (!authData.user) throw new Error("You must be signed in to save an image.");
+    const { data, error } = await supabase.from("account_images").upsert({
+      owner_id: authData.user.id,
+      image_url: imageUrl,
+      image_path: imagePath,
+      label: label.trim() || "Uploaded image",
+    }, { onConflict: "owner_id,image_path" }).select("*").single();
+    if (error) throw new Error(error.message);
+    setAccountImages((current) => [data as AccountImage, ...current.filter((image) => image.id !== data.id)]);
+  }
+
+  async function uploadDragDropBackgroundImage(file: File) {
+    setUploadingImage(true);
+    try {
+      const filePath = `${assessmentId}/location-background-${Date.now()}-${cleanFileName(file.name)}`;
+      const { error } = await supabase.storage.from("question-images").upload(filePath, file, { upsert: false });
+      if (error) throw new Error(error.message);
+      const { data } = supabase.storage.from("question-images").getPublicUrl(filePath);
+      await rememberAccountImage(data.publicUrl, filePath, file.name);
+      return { url: data.publicUrl, path: filePath };
+    } finally {
+      setUploadingImage(false);
+    }
+  }
+
+  async function deleteAccountImage(image: Pick<AccountImage, "id" | "image_url" | "image_path" | "label">) {
+    if (!window.confirm("Delete this image from your account? It will also be removed from every question and saved reference that uses it.")) return;
+
+    const { data: removedPath, error } = await supabase.rpc("delete_account_image", { target_image: image.id });
+    if (error) {
+      alert(error.message);
+      return;
+    }
+
+    setAccountImages((current) => current.filter((item) => item.id !== image.id));
+    setQuestions((current) => current.map((question) => ({
+      ...question,
+      question_data: clearImageReference(question.question_data, image.image_url, image.image_path),
+    })));
+    setReferenceBuilds((current) => current.map((reference) => clearImageReference(reference, image.image_url, image.image_path)));
+    setDragDropData((current) => clearImageReference(current, image.image_url, image.image_path));
+    setMultipleChoiceImages((current) => clearImageReference(current, image.image_url, image.image_path));
+    setChoiceTableCellImages((current) => clearImageReference(current, image.image_url, image.image_path));
+    setDragDropItemPreviewUrls((current) => Object.fromEntries(Object.entries(current).filter(([, url]) => url !== image.image_url)));
+    setMultipleChoiceImagePreviewUrls((current) => Object.fromEntries(Object.entries(current).filter(([, url]) => url !== image.image_url)));
+    setChoiceTableCellPreviewUrls((current) => Object.fromEntries(Object.entries(current).filter(([, url]) => url !== image.image_url)));
+    if (leftPanelImagePreviewUrl === image.image_url || existingLeftPanelImagePath === image.image_path) {
+      setSelectedReferenceQuestionId("");
+      setSelectedLeftPanelImageFile(null);
+      setExistingLeftPanelImageUrl("");
+      setExistingLeftPanelImagePath("");
+      setLeftPanelImagePreviewUrl("");
+    }
+
+    const storagePath = typeof removedPath === "string" && removedPath ? removedPath : image.image_path;
+    if (storagePath) {
+      const { error: storageError } = await supabase.storage.from("question-images").remove([storagePath]);
+      if (storageError) alert(`The image references were deleted, but the stored file could not be removed: ${storageError.message}`);
+    }
+  }
+
   async function uploadDragDropItemImages(data: DragDropData) {
     const items: DragDropData["items"] = [];
+    const uploadedFiles = new Map<File, { imageUrl: string; imagePath: string }>();
     for (const item of data.items) {
       const file = selectedDragDropItemFiles[item.id];
       if (!file) {
         items.push(item);
+        continue;
+      }
+      const existingUpload = uploadedFiles.get(file) || uploadedDragDropFilesRef.current.get(file);
+      if (existingUpload) {
+        items.push({ ...item, ...existingUpload });
         continue;
       }
       setUploadingImage(true);
@@ -1421,7 +1679,10 @@ export default function AssessmentEditorPage({
         throw new Error(error.message);
       }
       const { data: publicUrlData } = supabase.storage.from("question-images").getPublicUrl(filePath);
-      items.push({ ...item, imageUrl: publicUrlData.publicUrl, imagePath: filePath });
+      const uploadedImage = { imageUrl: publicUrlData.publicUrl, imagePath: filePath };
+      await rememberAccountImage(uploadedImage.imageUrl, uploadedImage.imagePath, item.content || file.name);
+      uploadedFiles.set(file, uploadedImage);
+      items.push({ ...item, ...uploadedImage });
     }
     setUploadingImage(false);
     return { ...data, items };
@@ -1452,6 +1713,7 @@ export default function AssessmentEditorPage({
       const { data } = supabase.storage
         .from("question-images")
         .getPublicUrl(filePath);
+      await rememberAccountImage(data.publicUrl, filePath, choiceTexts[index] || file.name);
       uploadedImages.push({ imageUrl: data.publicUrl, imagePath: filePath });
     }
 
@@ -1474,6 +1736,7 @@ export default function AssessmentEditorPage({
         const { error } = await supabase.storage.from("question-images").upload(filePath, file, { upsert: false });
         if (error) { setUploadingImage(false); throw new Error(error.message); }
         const { data } = supabase.storage.from("question-images").getPublicUrl(filePath);
+        await rememberAccountImage(data.publicUrl, filePath, `${choiceTableHeaders[columnIndex] || `Column ${columnIndex + 1}`} · ${file.name}`);
         nextImages[rowIndex][columnIndex] = { imageUrl: data.publicUrl, imagePath: filePath };
       }
     }
@@ -1891,6 +2154,8 @@ export default function AssessmentEditorPage({
       .from("question-images")
       .getPublicUrl(filePath);
 
+    await rememberAccountImage(data.publicUrl, filePath, selectedImageFile.name);
+
     setUploadingImage(false);
 
     return {
@@ -2001,6 +2266,8 @@ export default function AssessmentEditorPage({
       .from("question-images")
       .getPublicUrl(filePath);
 
+    await rememberAccountImage(data.publicUrl, filePath, leftPanelTitle || selectedLeftPanelImageFile.name);
+
     setUploadingImage(false);
     return { imageUrl: data.publicUrl, imagePath: filePath };
   }
@@ -2109,9 +2376,11 @@ export default function AssessmentEditorPage({
     setEditingQuestionId(question.id);
     setQuestionType(question.question_type);
     setDragDropData(normalizeDragDropData(question.question_data.dragDrop));
+    selectedDragDropItemFilesRef.current = {};
     setSelectedDragDropItemFiles({});
     setDragDropItemPreviewUrls(Object.fromEntries(normalizeDragDropData(question.question_data.dragDrop).items.filter((item) => item.imageUrl).map((item) => [item.id, item.imageUrl || ""])));
     setQuestionLayout(question.question_data.layout || "standard");
+    setSplitEditorTab("left");
     setSelectedReferenceQuestionId("");
     setLeftPanelTitle(question.question_data.leftPanelTitle || "");
     setLeftPanelTopContent(question.question_data.leftPanelTopContent || "");
@@ -2666,27 +2935,6 @@ export default function AssessmentEditorPage({
                 </p>
               )}
 
-              <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-slate-400">
-                <span>Student Code:</span>
-                <span className="font-mono text-lg font-semibold tracking-wider text-blue-300">
-                  {assessment.assessment_code}
-                </span>
-                <button
-                  type="button"
-                  onClick={copyStudentCode}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 px-2.5 py-1.5 text-xs font-semibold text-slate-300 transition hover:border-blue-500/60 hover:bg-blue-500/10 hover:text-blue-200"
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3.5 w-3.5" aria-hidden="true">
-                    {codeCopied ? (
-                      <path strokeLinecap="round" strokeLinejoin="round" d="m5 12 4 4L19 6" />
-                    ) : (
-                      <><rect x="9" y="9" width="11" height="11" rx="2" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3" /></>
-                    )}
-                  </svg>
-                  {codeCopied ? "Copied" : "Copy"}
-                </button>
-              </div>
-
               <p className="mt-1 text-sm text-slate-400">
                 Status:{" "}
                 <span
@@ -2701,39 +2949,34 @@ export default function AssessmentEditorPage({
               </p>
             </div>
 
-            {assessment.is_published ? (
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
               <button
-                onClick={unpublishAssessment}
-                className="rounded-xl border border-yellow-700 px-4 py-2 text-sm font-semibold text-yellow-200 hover:bg-yellow-950"
+                type="button"
+                onClick={() => {
+                  resetQuestionForm();
+                  setQuestionModalOpen(true);
+                }}
+                className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500"
               >
-                Unpublish
+                <span className="text-lg leading-none">+</span> Add Question
               </button>
-            ) : (
-              <button
-                onClick={publishAssessment}
-                className="rounded-xl bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-500"
-              >
-                Publish
-              </button>
-            )}
+              {assessment.is_published ? (
+                <button
+                  onClick={unpublishAssessment}
+                  className="rounded-xl border border-yellow-700 px-4 py-2 text-sm font-semibold text-yellow-200 hover:bg-yellow-950"
+                >
+                  Unpublish
+                </button>
+              ) : (
+                <button
+                  onClick={publishAssessment}
+                  className="rounded-xl bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-500"
+                >
+                  Publish
+                </button>
+              )}
+            </div>
           </div>
-        </div>
-
-        <div className="mt-8 flex items-center justify-between gap-4">
-          <div>
-            <h2 className="text-2xl font-bold">Assessment questions</h2>
-            <p className="mt-1 text-sm text-slate-500">Create, preview, and manage the questions students will see.</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              resetQuestionForm();
-              setQuestionModalOpen(true);
-            }}
-            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-3 font-semibold text-white shadow-lg shadow-blue-100 hover:bg-blue-700"
-          >
-            <span className="text-xl leading-none">+</span> Add Question
-          </button>
         </div>
 
         {questionModalOpen && (
@@ -2767,8 +3010,8 @@ export default function AssessmentEditorPage({
             <div>
               <p className="text-sm text-slate-300">Question Type</p>
               <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                <button type="button" onClick={() => setQuestionType("multiple-choice")} className={`rounded-xl border px-4 py-3 text-left font-semibold ${questionType === "multiple-choice" ? "border-blue-400 bg-blue-500/20 text-white" : "border-slate-700 bg-slate-950 text-slate-300"}`}>Multiple Choice</button>
-                <button type="button" onClick={() => setQuestionType("drag-and-drop")} className={`rounded-xl border px-4 py-3 text-left font-semibold ${questionType === "drag-and-drop" ? "border-blue-400 bg-blue-500/20 text-white" : "border-slate-700 bg-slate-950 text-slate-300"}`}>Drag &amp; Drop</button>
+                <button type="button" onClick={() => setQuestionType("multiple-choice")} className={`rounded-xl border px-4 py-3 text-left font-semibold text-black ${questionType === "multiple-choice" ? "border-blue-400 bg-blue-100" : "border-slate-300 bg-white hover:border-blue-300 hover:bg-blue-50"}`}>Multiple Choice</button>
+                <button type="button" onClick={() => setQuestionType("drag-and-drop")} className={`rounded-xl border px-4 py-3 text-left font-semibold text-black ${questionType === "drag-and-drop" ? "border-blue-400 bg-blue-100" : "border-slate-300 bg-white hover:border-blue-300 hover:bg-blue-50"}`}>Drag &amp; Drop</button>
               </div>
             </div>
 
@@ -2793,7 +3036,10 @@ export default function AssessmentEditorPage({
 
                 <button
                   type="button"
-                  onClick={() => setQuestionLayout("split")}
+                  onClick={() => {
+                    setQuestionLayout("split");
+                    setSplitEditorTab("left");
+                  }}
                   className={`rounded-xl border p-4 text-left transition ${
                     questionLayout === "split"
                       ? "border-blue-500 bg-blue-950/40 ring-2 ring-blue-500/20"
@@ -2814,39 +3060,58 @@ export default function AssessmentEditorPage({
 
             <hr className="border-slate-700" />
 
-            <div
-              className={`grid items-start gap-4 lg:gap-6 ${
-                questionLayout === "split" ? "grid-cols-2" : "grid-cols-1"
-              }`}
-            >
-              {questionLayout === "split" && (
-              <section className="min-w-0 rounded-2xl border border-blue-900/80 bg-blue-950/20 p-4 lg:sticky lg:top-4 lg:p-5">
-                <div className="mb-5 flex items-center gap-3 border-b border-blue-900/60 pb-4">
-                  <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-500 text-sm font-bold text-white">L</span>
-                  <div>
-                    <h3 className="font-semibold text-blue-100">Left side</h3>
-                    <p className="text-xs text-slate-400">Reference material shown beside the question</p>
-                  </div>
-                </div>
+            {questionLayout === "split" && (
+              <div className="grid grid-cols-2 rounded-xl border border-slate-700 bg-slate-950 p-1" role="tablist" aria-label="Split question editor">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={splitEditorTab === "left"}
+                  onClick={() => setSplitEditorTab("left")}
+                  className={`rounded-lg px-4 py-3 text-sm font-bold transition ${splitEditorTab === "left" ? "bg-blue-600 text-white shadow-sm" : "text-slate-400 hover:bg-slate-800 hover:text-white"}`}
+                >
+                  Left side · Reference
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={splitEditorTab === "right"}
+                  onClick={() => setSplitEditorTab("right")}
+                  className={`rounded-lg px-4 py-3 text-sm font-bold transition ${splitEditorTab === "right" ? "bg-violet-600 text-white shadow-sm" : "text-slate-400 hover:bg-slate-800 hover:text-white"}`}
+                >
+                  Right side · Question
+                </button>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 items-start gap-4 lg:gap-6">
+              {questionLayout === "split" && splitEditorTab === "left" && (
+              <section className="min-w-0">
                   <div>
                 <div className="rounded-xl border border-blue-200 bg-blue-50 p-3">
                   <label className="block text-xs font-bold uppercase tracking-wider text-blue-800">
                     Reuse a saved reference
                   </label>
-                  <select
-                    value={selectedReferenceQuestionId}
-                    onChange={(event) => reuseSavedReference(event.target.value)}
-                    className="mt-2 w-full rounded-lg border border-blue-300 bg-white px-3 py-2 text-sm text-slate-900"
-                  >
-                    <option value="">Build a new reference</option>
-                    {referenceBuilds.map((reference) => (
-                      <option key={reference.id} value={reference.id}>
-                        {reference.name}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+                    <select
+                      value={selectedReferenceQuestionId}
+                      onChange={(event) => reuseSavedReference(event.target.value)}
+                      className="min-w-0 flex-1 rounded-lg border border-blue-300 bg-white px-3 py-2 text-sm text-slate-900"
+                    >
+                      <option value="">Build a new reference</option>
+                      {referenceBuilds.map((reference) => (
+                        <option key={reference.id} value={reference.id}>
+                          {reference.name}
+                        </option>
+                      ))}
+                    </select>
+                    {selectedReferenceQuestionId && (
+                      <button type="button" onClick={() => void deleteSelectedReferenceBuild()} disabled={deletingReferenceBuild} className="rounded-lg border border-red-300 bg-white px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50">
+                        {deletingReferenceBuild ? "Deleting..." : "Delete saved reference"}
+                      </button>
+                    )}
+                  </div>
                   <p className="mt-2 text-xs leading-5 text-blue-700">
-                    Your explicitly saved references are available in every assessment. Choosing one copies it here without changing the original.
+                    Your saved references are available in every assessment. Editing a reused reference automatically switches this editor to Build a new reference.
                   </p>
                 </div>
                 <p className="mt-1 text-xs leading-5 text-slate-400">
@@ -2858,7 +3123,7 @@ export default function AssessmentEditorPage({
                 <input
                   className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white"
                   value={leftPanelTitle}
-                  onChange={(event) => setLeftPanelTitle(event.target.value)}
+                  onChange={(event) => { setSelectedReferenceQuestionId(""); setLeftPanelTitle(event.target.value); }}
                   placeholder="Example: Some Facts About Giant Canada Geese"
                 />
 
@@ -2867,7 +3132,7 @@ export default function AssessmentEditorPage({
                 </label>
                 <RichTextEditor
                   value={leftPanelTopContent}
-                  onChange={setLeftPanelTopContent}
+                  onChange={(value) => { setSelectedReferenceQuestionId(""); setLeftPanelTopContent(value); }}
                   placeholder="Add introductory text that appears before the image..."
                   minHeight="7rem"
                 />
@@ -2914,31 +3179,24 @@ export default function AssessmentEditorPage({
                             leftPanelImagePreviewUrl === image.url;
 
                           return (
-                            <button
-                              key={image.url}
-                              type="button"
-                              onClick={() => {
+                            <div key={image.url} className="group relative">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                setSelectedReferenceQuestionId("");
                                 setSelectedLeftPanelImageFile(null);
                                 setExistingLeftPanelImageUrl(image.url);
                                 setExistingLeftPanelImagePath(image.path);
                                 setLeftPanelImagePreviewUrl(image.url);
                                 setShowUploadedImagePicker(false);
                               }}
-                              className={`overflow-hidden rounded-lg border p-2 text-left transition ${
-                                selected
-                                  ? "border-blue-500 bg-blue-950/50 ring-2 ring-blue-500/20"
-                                  : "border-slate-700 bg-slate-900 hover:border-slate-500"
-                              }`}
-                            >
-                              <img
-                                src={image.url}
-                                alt={image.label}
-                                className="h-24 w-full rounded-md bg-white object-contain"
-                              />
-                              <span className="mt-2 block truncate text-xs text-slate-300">
-                                {image.label}
-                              </span>
-                            </button>
+                                className={`w-full overflow-hidden rounded-lg border p-2 text-left transition ${selected ? "border-blue-500 bg-blue-950/50 ring-2 ring-blue-500/20" : "border-slate-700 bg-slate-900 hover:border-slate-500"}`}
+                              >
+                                <img src={image.url} alt={image.label} className="h-24 w-full rounded-md bg-white object-contain" />
+                                <span className="mt-2 block truncate text-xs text-slate-300">{image.label}</span>
+                              </button>
+                              {image.id && <button type="button" onClick={() => void deleteAccountImage({ id: image.id!, image_url: image.url, image_path: image.path, label: image.label })} className="absolute right-1.5 top-1.5 grid h-7 w-7 place-items-center rounded-full bg-red-600 text-sm font-bold text-white opacity-0 shadow-md transition hover:bg-red-700 focus:opacity-100 group-hover:opacity-100" aria-label={`Delete ${image.label} from existing uploads`}>×</button>}
+                            </div>
                           );
                         })}
                       </div>
@@ -2955,6 +3213,7 @@ export default function AssessmentEditorPage({
                     <button
                       type="button"
                       onClick={() => {
+                        setSelectedReferenceQuestionId("");
                         setSelectedLeftPanelImageFile(null);
                         setExistingLeftPanelImageUrl("");
                         setExistingLeftPanelImagePath("");
@@ -2972,7 +3231,7 @@ export default function AssessmentEditorPage({
                 </label>
                 <RichTextEditor
                   value={leftPanelContent}
-                  onChange={setLeftPanelContent}
+                  onChange={(value) => { setSelectedReferenceQuestionId(""); setLeftPanelContent(value); }}
                   placeholder="Add captions, facts, or reference text that appears after the image..."
                 />
                 <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 p-3">
@@ -3003,16 +3262,13 @@ export default function AssessmentEditorPage({
               </section>
               )}
 
-              <section className="min-w-0">
-                {questionLayout === "split" && (
-                  <div className="mb-5 flex items-center gap-3 border-b border-slate-700 pb-4">
-                  <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-violet-500 text-sm font-bold text-white">R</span>
-                  <div>
-                    <h3 className="font-semibold text-white">Right side</h3>
-                    <p className="text-xs text-slate-400">Question prompt and student response</p>
-                  </div>
-                  </div>
-                )}
+              <section className={`min-w-0 ${questionLayout === "split" && splitEditorTab !== "right" ? "hidden" : ""}`}>
+
+            {questionType === "drag-and-drop" && (
+              <div className="mb-6">
+                <DragDropPresetPicker value={dragDropData} onChange={setDragDropData} />
+              </div>
+            )}
 
             <div>
               <label className="text-base font-semibold text-slate-200">
@@ -3066,7 +3322,7 @@ export default function AssessmentEditorPage({
               )}
             </div>
 
-            {questionType === "drag-and-drop" && <DragDropEditor value={dragDropData} onChange={setDragDropData} uploadedImages={uploadedImages} itemPreviewUrls={dragDropItemPreviewUrls} onItemImageFileChange={handleDragDropItemImageChange} onChooseItemImage={chooseDragDropItemImage} onRemoveItemImage={removeDragDropItemImage} />}
+            {questionType === "drag-and-drop" && <DragDropEditor value={dragDropData} onChange={setDragDropData} uploadedImages={uploadedImages} itemPreviewUrls={dragDropItemPreviewUrls} onItemImageFileChange={handleDragDropItemImageChange} onChooseItemImage={chooseDragDropItemImage} onRemoveItemImage={removeDragDropItemImage} onUploadBackground={uploadDragDropBackgroundImage} onDeleteUploadedImage={(image) => void deleteAccountImage({ id: image.id, image_url: image.url, image_path: image.path, label: image.label })} />}
 
             {questionType === "multiple-choice" && (
               <>
@@ -3112,15 +3368,15 @@ export default function AssessmentEditorPage({
                             </div>
                             {choiceTableUploadedPickerCell === cellKey && <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
                               {uploadedImages.length === 0 ? <p className="p-2 text-xs text-slate-500">No previously uploaded images are available yet.</p> : <div className="grid max-h-56 grid-cols-2 gap-2 overflow-y-auto">
-                                {uploadedImages.map((image) => <button key={`${cellKey}-${image.url}`} type="button" onClick={() => {
+                                {uploadedImages.map((image) => <div key={`${cellKey}-${image.url}`} className="group relative"><button type="button" onClick={() => {
                                   setChoiceTableCellImages((current) => current.map((imageRow, currentRowIndex) => currentRowIndex === rowIndex ? imageRow.map((currentImage, currentColumnIndex) => currentColumnIndex === columnIndex ? { imageUrl: image.url, imagePath: image.path } : currentImage) : imageRow));
                                   setSelectedChoiceTableCellFiles((current) => { const next = { ...current }; delete next[cellKey]; return next; });
                                   setChoiceTableCellPreviewUrls((current) => ({ ...current, [cellKey]: image.url }));
                                   setChoiceTableUploadedPickerCell(null);
-                                }} className="overflow-hidden rounded-md border border-slate-200 bg-white p-1.5 text-left transition hover:border-blue-500">
+                                }} className="w-full overflow-hidden rounded-md border border-slate-200 bg-white p-1.5 text-left transition hover:border-blue-500">
                                   <img src={image.url} alt={image.label} className="h-20 w-full rounded object-contain" />
                                   <span className="mt-1 block truncate text-[11px] font-medium text-slate-600">{image.label}</span>
-                                </button>)}
+                                </button>{image.id && <button type="button" onClick={() => void deleteAccountImage({ id: image.id!, image_url: image.url, image_path: image.path, label: image.label })} className="absolute right-1 top-1 grid h-6 w-6 place-items-center rounded-full bg-red-600 text-xs font-bold text-white opacity-0 shadow transition hover:bg-red-700 focus:opacity-100 group-hover:opacity-100" aria-label={`Delete ${image.label} from existing uploads`}>×</button>}</div>)}
                               </div>}
                             </div>}
                           </div>
@@ -4118,11 +4374,12 @@ export default function AssessmentEditorPage({
                           <p className="mb-2 text-xs font-bold uppercase tracking-[0.14em] text-slate-500">
                             Choices
                           </p>
-                          <div className={`flex flex-wrap gap-3 ${dragDropData.preset === "categories" ? "justify-center" : ""}`}>
+                          {dragDropData.preset !== "sequence" && dragDropData.preset !== "locations" && <div className={`flex flex-wrap gap-3 ${dragDropData.preset === "categories" ? "justify-center" : ""}`}>
                             {dragDropData.items.map((item) => (
                               <div
                                 key={item.id}
-                                className={`${dragDropData.preset === "categories" ? "min-w-32 rounded-none border-slate-500 px-4 py-2.5 text-center font-serif font-semibold" : "rounded-lg border-slate-300 px-4 py-3 text-sm font-medium shadow-sm"} border bg-white text-slate-900`}
+                                style={dragDropData.preset === "locations" ? getLocationBoxSize(dragDropData.items.map((current) => ({ ...current, imageUrl: dragDropItemPreviewUrls[current.id] || current.imageUrl }))) : undefined}
+                                className={`${dragDropData.preset === "categories" ? "min-w-32 rounded-none border-slate-500 px-4 py-2.5 text-center font-serif font-semibold" : dragDropData.preset === "locations" ? "flex shrink-0 flex-col items-center justify-center rounded border-slate-400 px-3 py-2 text-center text-sm font-medium shadow-sm" : "rounded-lg border-slate-300 px-4 py-3 text-sm font-medium shadow-sm"} box-border border bg-white text-slate-900`}
                               >
                                 {(dragDropItemPreviewUrls[item.id] || item.imageUrl) && (
                                   <img
@@ -4134,16 +4391,18 @@ export default function AssessmentEditorPage({
                                 {item.content || "Untitled item"}
                               </div>
                             ))}
-                          </div>
+                          </div>}
                         </div>
 
-                        <div
+                        {dragDropData.preset === "sequence" ? (
+                          <SequencePreview data={dragDropData} itemPreviewUrls={dragDropItemPreviewUrls} />
+                        ) : dragDropData.preset === "locations" ? (
+                          <LocationPreview data={dragDropData} itemPreviewUrls={dragDropItemPreviewUrls} />
+                        ) : <div
                           className={`grid ${
                             dragDropData.preset === "categories"
                               ? "gap-2 sm:grid-cols-2"
-                              : dragDropData.preset === "sequence"
-                                ? "grid-cols-1 gap-4"
-                                : "gap-4 sm:grid-cols-2"
+                              : "gap-4 sm:grid-cols-2"
                           }`}
                         >
                           {dragDropData.zones.map((zone, zoneIndex) => (
@@ -4164,7 +4423,7 @@ export default function AssessmentEditorPage({
                               )}
                             </div>
                           ))}
-                        </div>
+                        </div>}
                       </div>
                     )}
 
@@ -4272,10 +4531,7 @@ export default function AssessmentEditorPage({
             </p>
           ) : (
             <div className="mt-4 space-y-4">
-              <div className="flex items-center justify-between gap-3 text-xs text-slate-500">
-                <span>Drag the handle on any question to change its order.</span>
-                {reorderingQuestions && <span className="font-semibold text-blue-600">Saving order…</span>}
-              </div>
+              {reorderingQuestions && <p className="text-right text-xs font-semibold text-blue-400">Saving order…</p>}
               {questions.map((question, index) => (
                 <div
                   key={question.id}

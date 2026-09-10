@@ -7,7 +7,7 @@ function assignment(id: string, options: { classroom?: string; allowAll?: boolea
     assessment_id: id,
     classroom_id: options.classroom || "classroom-1",
     allow_all_students: options.allowAll ?? true,
-    assessments: { title: id, description: null, assessment_code: id.toUpperCase(), is_published: options.published ?? true },
+    assessments: { title: id, description: null, is_published: options.published ?? true },
   };
 }
 

@@ -5,7 +5,6 @@ export type StudentAssignment = {
   assessments: {
     title: string;
     description: string | null;
-    assessment_code: string;
     is_published: boolean;
   } | null;
 };

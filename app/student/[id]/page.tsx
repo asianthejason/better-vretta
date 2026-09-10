@@ -7,6 +7,7 @@ import { supabase } from "@/lib/supabaseClient";
 import ImageMarkup from "./ImageMarkup";
 import DragDropQuestion from "./DragDropQuestion";
 import { gradeDragDrop, isDragDropAnswered, normalizeDragDropData, type DragDropData, type DragDropPlacements } from "@/lib/dragDrop";
+import { lockdownFrameWasInterrupted, lockdownPageLostFocus } from "@/lib/lockdownMonitor";
 
 type QuestionType =
   | "multiple-choice"
@@ -82,7 +83,6 @@ type Assessment = {
   id: string;
   title: string;
   description: string | null;
-  assessment_code: string;
   is_published: boolean;
 };
 
@@ -220,11 +220,10 @@ function leftPanelTableHasContent(table: LeftPanelTable | undefined) {
 export default function StudentAssessmentPage({
   params,
 }: {
-  params: Promise<{ code: string }>;
+  params: Promise<{ id: string }>;
 }) {
   const searchParams = useSearchParams();
   const teacherPreview = searchParams.get("preview") === "1";
-  const [assessmentCode, setAssessmentCode] = useState("");
   const [studentUserId, setStudentUserId] = useState("");
   const [accountRole, setAccountRole] = useState<"teacher" | "student">("student");
   const [accessDenied, setAccessDenied] = useState(false);
@@ -285,10 +284,7 @@ export default function StudentAssessmentPage({
   useEffect(() => {
     async function getParams() {
       const resolvedParams = await params;
-      const code = resolvedParams.code.toUpperCase();
-
-      setAssessmentCode(code);
-      loadAssessment(code);
+      loadAssessment(resolvedParams.id);
     }
 
     getParams();
@@ -346,13 +342,31 @@ export default function StudentAssessmentPage({
     }
 
     const activeTimer = window.setInterval(() => {
-      if (document.visibilityState === "visible" && document.hasFocus()) {
+      if (
+        entryState?.runStatus === "live"
+        && entryState.studentStatus === "active"
+        && questionsReady
+        && document.visibilityState === "visible"
+        && document.hasFocus()
+      ) {
         activeSecondsRef.current += 1;
       }
     }, 1000);
     const flushTimer = window.setInterval(() => void flushActivity(), 10000);
+    const focusCheckTimer = window.setInterval(() => {
+      if (lockdownPageLostFocus(document.visibilityState, document.hasFocus())) void terminateForLockdown();
+    }, 400);
+    let lastAnimationFrame = performance.now();
+    let animationFrameId = 0;
+    const monitorAnimationFrames = (now: number) => {
+      const frameGap = now - lastAnimationFrame;
+      lastAnimationFrame = now;
+      if (lockdownFrameWasInterrupted(frameGap)) void terminateForLockdown();
+      animationFrameId = window.requestAnimationFrame(monitorAnimationFrames);
+    };
+    animationFrameId = window.requestAnimationFrame(monitorAnimationFrames);
     const handleVisibilityChange = () => {
-      if (document.visibilityState === "hidden") void terminateForLockdown();
+      if (lockdownPageLostFocus(document.visibilityState, document.hasFocus())) void terminateForLockdown();
     };
     const handleBlur = () => {
       window.setTimeout(() => {
@@ -366,12 +380,14 @@ export default function StudentAssessmentPage({
     return () => {
       window.clearInterval(activeTimer);
       window.clearInterval(flushTimer);
+      window.clearInterval(focusCheckTimer);
+      window.cancelAnimationFrame(animationFrameId);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("blur", handleBlur);
       window.removeEventListener("pagehide", terminateForLockdown);
       if (!lockdownEndingRef.current) void flushActivity();
     };
-  }, [assessment, accountRole, submitted, teacherPreview, entryState?.studentStatus]);
+  }, [assessment, accountRole, submitted, teacherPreview, entryState?.runStatus, entryState?.studentStatus, questionsReady]);
 
   useEffect(() => {
     if (entryState?.studentStatus === "active") lockdownEndingRef.current = false;
@@ -459,6 +475,26 @@ export default function StudentAssessmentPage({
   }, [assessment, accountRole, submitted, teacherPreview]);
 
   useEffect(() => {
+    if (
+      !assessment
+      || accountRole !== "student"
+      || teacherPreview
+      || submitted
+      || !entryState?.studentStatus
+      || entryState.studentStatus === "submitted"
+    ) return;
+
+    const recordPresence = async () => {
+      if (document.visibilityState !== "visible" || !document.hasFocus()) return;
+      await supabase.rpc("record_assessment_presence", { target_assessment: assessment.id });
+    };
+
+    void recordPresence();
+    const timer = window.setInterval(() => void recordPresence(), 10_000);
+    return () => window.clearInterval(timer);
+  }, [assessment, accountRole, entryState?.studentStatus, submitted, teacherPreview]);
+
+  useEffect(() => {
     if (questions.length === 0) return;
     draftPayloadRef.current = questions.map((question) => ({
       question_id: question.id,
@@ -500,7 +536,7 @@ export default function StudentAssessmentPage({
     return true;
   }
 
-  async function loadAssessment(code: string) {
+  async function loadAssessment(id: string) {
     const [{ data: { user } }, { data: { session } }] = await Promise.all([supabase.auth.getUser(), supabase.auth.getSession()]);
     if (!user) {
       window.location.href = "/login";
@@ -511,7 +547,7 @@ export default function StudentAssessmentPage({
     let assessmentQuery = supabase
       .from("assessments")
       .select("*")
-      .eq("assessment_code", code);
+      .eq("id", id);
     if (!teacherPreview) assessmentQuery = assessmentQuery.eq("is_published", true);
     const { data: assessmentData, error: assessmentError } = await assessmentQuery.single();
 
@@ -1021,16 +1057,14 @@ export default function StudentAssessmentPage({
     return (
       <main className="min-h-screen bg-slate-950 px-6 py-10 text-white">
         <div className="mx-auto max-w-3xl">
-          <Link href="/student" className="text-sm text-blue-300 hover:underline">
-            ← Try another code
+          <Link href="/student/dashboard" className="text-sm text-blue-300 hover:underline">
+            ← Back to assigned assessments
           </Link>
 
           <h1 className="mt-8 text-4xl font-bold">{accessDenied ? "Access not assigned" : "Assessment Not Found"}</h1>
 
           <p className="mt-4 text-slate-300">
-            {accessDenied ? "Your student account has not been given access to this assessment." : <>The code{" "}
-            <span className="font-mono text-blue-300">{assessmentCode}</span>{" "}
-            does not match a published assessment.</>}
+            {accessDenied ? "Your student account has not been assigned this assessment." : "This assigned assessment is unavailable or has not been published."}
           </p>
         </div>
       </main>
@@ -1046,9 +1080,7 @@ export default function StudentAssessmentPage({
               <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 text-white shadow-lg shadow-blue-200">J</span>
               Jretta
             </Link>
-            <span className="hidden rounded-lg bg-slate-100 px-3 py-2 font-mono text-xs font-bold tracking-wider text-slate-600 sm:block">
-              {assessment.assessment_code}
-            </span>
+            <Link href="/student/dashboard" className="rounded-lg bg-slate-100 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200">Student Dashboard</Link>
           </div>
         </header>
 
@@ -1084,8 +1116,8 @@ export default function StudentAssessmentPage({
             </div>
 
             <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
-              <Link href="/student" className="inline-flex items-center justify-center rounded-xl bg-blue-600 px-6 py-3.5 font-semibold text-white shadow-lg shadow-blue-100 transition hover:bg-blue-700">
-                Enter another code
+              <Link href="/student/dashboard" className="inline-flex items-center justify-center rounded-xl bg-blue-600 px-6 py-3.5 font-semibold text-white shadow-lg shadow-blue-100 transition hover:bg-blue-700">
+                View assigned assessments
               </Link>
               <Link href="/" className="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-white px-6 py-3.5 font-semibold text-slate-700 shadow-sm transition hover:border-slate-400 hover:bg-slate-50">
                 Return home
@@ -1102,7 +1134,7 @@ export default function StudentAssessmentPage({
     const alreadySubmitted = entryState?.studentStatus === "submitted";
     const ended = entryState?.runStatus === "ended";
     return <main className="min-h-screen bg-slate-950 text-white">
-      <header className="border-b border-slate-800"><div className="mx-auto flex min-h-20 max-w-5xl items-center justify-between px-6"><span className="font-bold">Jretta</span><span className="rounded-lg bg-slate-900 px-3 py-2 font-mono text-xs font-bold tracking-wider text-slate-400">{assessment.assessment_code}</span></div></header>
+      <header className="border-b border-slate-800"><div className="mx-auto flex min-h-20 max-w-5xl items-center justify-between px-6"><span className="font-bold">Jretta</span><Link href="/student/dashboard" className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-slate-300 hover:bg-slate-800">Student Dashboard</Link></div></header>
       <section className="mx-auto flex min-h-[calc(100vh-5rem)] max-w-2xl items-center justify-center px-6 py-16 text-center">
         <div aria-live="polite">
           <span className={`mx-auto grid size-16 place-items-center rounded-full text-2xl ${blocked ? "bg-red-500/20 text-red-300" : alreadySubmitted ? "bg-emerald-500/20 text-emerald-300" : "bg-blue-500/20 text-blue-300"}`}>{blocked ? "!" : alreadySubmitted ? "✓" : "…"}</span>
@@ -1177,9 +1209,6 @@ export default function StudentAssessmentPage({
                 />
               </label>
             )}
-            <span className="hidden rounded-lg bg-slate-100 px-3 py-2 font-mono text-xs font-bold tracking-wider text-slate-600 md:block">
-              {assessment.assessment_code}
-            </span>
           </div>
         </div>
       </header>
@@ -1388,7 +1417,7 @@ export default function StudentAssessmentPage({
                   <div className="mt-6 overflow-x-auto">
                     <table className={`w-full border-collapse text-left ${question.question_data.choiceTable.hasBorder ? "border border-slate-300" : ""}`}>
                       <thead><tr><th className={`w-16 px-3 py-3 text-center ${question.question_data.choiceTable.hasBorder ? "border border-slate-300" : ""}`}>Row</th>{question.question_data.choiceTable.headers.map((header, headerIndex) => <th key={headerIndex} className={`px-4 py-3 font-semibold ${question.question_data.choiceTable?.hasBorder ? "border border-slate-300" : ""}`}>{header}</th>)}</tr></thead>
-                      <tbody>{question.question_data.choiceTable.rows.map((row, rowIndex) => { const choiceValue = getMultipleChoiceValue(question.question_data.choices?.[rowIndex] || "", rowIndex); const selected = multipleChoiceAnswers[question.id] === choiceValue; return <tr key={rowIndex} role="radio" aria-checked={selected} tabIndex={0} onClick={() => selectMultipleChoiceAnswer(question.id, choiceValue)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectMultipleChoiceAnswer(question.id, choiceValue); } }} className={`cursor-pointer outline-none transition focus:ring-2 focus:ring-inset focus:ring-blue-500 ${selected ? "bg-blue-100 text-blue-950" : "hover:bg-blue-50/60"}`}><td className={`px-3 py-3 text-center ${question.question_data.choiceTable?.hasBorder ? "border border-slate-300" : ""}`}><span className={`inline-flex h-6 w-6 items-center justify-center rounded-full border-2 ${selected ? "border-blue-600" : "border-slate-500"}`}>{selected && <span className="h-3 w-3 rounded-full bg-blue-600" />}</span></td>{row.map((cell, cellIndex) => <td key={cellIndex} className={`px-4 py-3 ${question.question_data.choiceTable?.hasBorder ? "border border-slate-300" : ""}`}>{question.question_data.choiceTable?.cellImages?.[rowIndex]?.[cellIndex]?.imageUrl && <img src={question.question_data.choiceTable.cellImages[rowIndex][cellIndex].imageUrl} alt="" className="mx-auto mb-2 max-h-40 max-w-full object-contain" />}<div className="rich-text-content" dangerouslySetInnerHTML={{ __html: cell }} /></td>)}</tr>; })}</tbody>
+                      <tbody>{question.question_data.choiceTable.rows.map((row, rowIndex) => { const choiceValue = getMultipleChoiceValue(question.question_data.choices?.[rowIndex] || "", rowIndex); const selected = multipleChoiceAnswers[question.id] === choiceValue; return <tr key={rowIndex} role="radio" aria-checked={selected} tabIndex={0} onClick={() => selectMultipleChoiceAnswer(question.id, choiceValue)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectMultipleChoiceAnswer(question.id, choiceValue); } }} className={`cursor-pointer text-black outline-none transition focus:ring-2 focus:ring-inset focus:ring-blue-500 ${selected ? "bg-blue-100" : "hover:bg-blue-50/60"}`}><td className={`px-3 py-3 text-center ${question.question_data.choiceTable?.hasBorder ? "border border-slate-300" : ""}`}><span className={`inline-flex h-6 w-6 items-center justify-center rounded-full border-2 ${selected ? "border-blue-600" : "border-slate-500"}`}>{selected && <span className="h-3 w-3 rounded-full bg-blue-600" />}</span></td>{row.map((cell, cellIndex) => <td key={cellIndex} className={`px-4 py-3 ${question.question_data.choiceTable?.hasBorder ? "border border-slate-300" : ""}`}>{question.question_data.choiceTable?.cellImages?.[rowIndex]?.[cellIndex]?.imageUrl && <img src={question.question_data.choiceTable.cellImages[rowIndex][cellIndex].imageUrl} alt="" className="mx-auto mb-2 max-h-40 max-w-full object-contain" />}<div className="rich-text-content" dangerouslySetInnerHTML={{ __html: cell }} /></td>)}</tr>; })}</tbody>
                     </table>
                   </div>
                   ) : (
@@ -1406,8 +1435,8 @@ export default function StudentAssessmentPage({
                           }
                           className={
                             selected
-                              ? `w-full rounded-xl border-2 border-blue-600 bg-blue-50 text-left font-semibold text-blue-900 ${multipleChoiceHasImages ? "max-w-[22rem] p-4" : "max-w-full px-5 py-3"}`
-                              : `w-full rounded-xl border-2 border-slate-200 bg-white text-left text-slate-700 hover:border-blue-300 hover:bg-blue-50/40 ${multipleChoiceHasImages ? "max-w-[22rem] p-4" : "max-w-full px-5 py-3"}`
+                              ? `w-full rounded-xl border-2 border-blue-600 bg-blue-50 text-left font-semibold text-black ${multipleChoiceHasImages ? "max-w-[22rem] p-4" : "max-w-full px-5 py-3"}`
+                              : `w-full rounded-xl border-2 border-slate-200 bg-white text-left text-black hover:border-blue-300 hover:bg-blue-50/40 ${multipleChoiceHasImages ? "max-w-[22rem] p-4" : "max-w-full px-5 py-3"}`
                           }
                         >
                           {question.question_data.choiceImages?.[choiceIndex]

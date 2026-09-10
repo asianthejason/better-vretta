@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { requireAccountRole } from "@/lib/roleGuard";
+import { compareStudentNamesByLastName } from "@/lib/studentNameSort";
 import { supabase } from "@/lib/supabaseClient";
 
 type Classroom = { id: string; name: string; join_code: string };
@@ -67,7 +68,15 @@ export default function ClassroomsPage() {
         .order("is_owner", { ascending: false }),
     ]);
 
-    setStudents((roster || []) as unknown as Student[]);
+    const sortedStudents = ([...(roster || [])] as unknown as Student[]).sort((left, right) =>
+      compareStudentNamesByLastName(
+        left.profiles?.full_name,
+        right.profiles?.full_name,
+        left.profiles?.email,
+        right.profiles?.email,
+      ),
+    );
+    setStudents(sortedStudents);
     setTeachers((teacherRows || []) as unknown as ClassroomTeacher[]);
   }
 
@@ -321,26 +330,19 @@ export default function ClassroomsPage() {
                     )}
                   </div>
 
-                  <div className="mt-4 divide-y divide-slate-200 rounded-xl border border-slate-200">
+                  <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
                     {teachers.map((teacher) => {
                       const fullName = teacher.profiles?.full_name || "Teacher";
                       return (
-                        <div key={teacher.teacher_id} className="flex items-center gap-3 px-4 py-3.5">
-                          <span className="grid size-10 shrink-0 place-items-center rounded-full bg-indigo-100 text-sm font-black text-indigo-700">
-                            {fullName.charAt(0).toUpperCase()}
-                          </span>
-                          <span className="min-w-0 flex-1">
-                            <span className="flex items-center gap-2">
-                              <span className="truncate text-sm font-extrabold text-slate-900">{fullName}</span>
-                              {teacher.is_owner && (
-                                <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wider text-blue-700">
-                                  Owner
-                                </span>
-                              )}
-                            </span>
-                            <span className="block truncate text-sm text-slate-600">{teacher.profiles?.email}</span>
-                          </span>
-                          {canManageTeachers && !teacher.is_owner && (
+                        <div key={teacher.teacher_id} className="grid min-w-[620px] grid-cols-[minmax(170px,0.8fr)_minmax(260px,1.4fr)_120px] items-center gap-5 border-b border-slate-200 px-4 py-3 last:border-b-0">
+                          <span className="truncate text-sm font-extrabold text-slate-900">{fullName}</span>
+                          <span className="truncate text-sm text-slate-600">{teacher.profiles?.email || "No email available"}</span>
+                          <span className="flex justify-end">
+                            {teacher.is_owner ? (
+                              <span className="rounded-full bg-blue-100 px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wider text-blue-700">
+                                Owner
+                              </span>
+                            ) : canManageTeachers ? (
                             <button
                               type="button"
                               onClick={() => void removeTeacher(teacher)}
@@ -348,7 +350,8 @@ export default function ClassroomsPage() {
                             >
                               Remove
                             </button>
-                          )}
+                            ) : null}
+                          </span>
                         </div>
                       );
                     })}
@@ -381,22 +384,17 @@ export default function ClassroomsPage() {
                       </button>
                     </div>
                   </div>
-                  <div className="mt-4 divide-y divide-slate-200 rounded-xl border border-slate-200">
+                  <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
                     {students.map((student) => {
                       const fullName = student.profiles?.full_name || "Student";
                       return (
-                        <div key={student.student_id} className="flex items-center gap-3 px-4 py-3.5">
-                          <span className="grid size-10 shrink-0 place-items-center rounded-full bg-blue-100 text-sm font-black text-blue-700">
-                            {fullName.charAt(0).toUpperCase()}
-                          </span>
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-sm font-extrabold text-slate-900">{fullName}</span>
-                            <span className="block truncate text-sm text-slate-600">{student.profiles?.email}</span>
-                          </span>
+                        <div key={student.student_id} className="grid min-w-[620px] grid-cols-[minmax(170px,0.8fr)_minmax(260px,1.4fr)_120px] items-center gap-5 border-b border-slate-200 px-4 py-3 last:border-b-0">
+                          <span className="truncate text-sm font-extrabold text-slate-900">{fullName}</span>
+                          <span className="truncate text-sm text-slate-600">{student.profiles?.email || "No email available"}</span>
                           <button
                             type="button"
                             onClick={() => void removeStudent(student)}
-                            className="shrink-0 rounded-lg px-3 py-2 text-sm font-bold text-red-600 transition hover:bg-red-50 hover:text-red-700"
+                            className="justify-self-end rounded-lg px-3 py-2 text-sm font-bold text-red-600 transition hover:bg-red-50 hover:text-red-700"
                             aria-label={`Remove ${fullName} from class`}
                           >
                             Remove

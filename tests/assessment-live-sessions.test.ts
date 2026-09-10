@@ -48,14 +48,21 @@ test("assessment waiting, lockdown, teacher grant, and submission are enforced b
     await db.exec(await readFile(new URL("../supabase/migrations/20260910_assessment_live_sessions.sql", import.meta.url), "utf8"));
     await db.exec(await readFile(new URL("../supabase/migrations/20260911_grant_waiting_room_reentry.sql", import.meta.url), "utf8"));
     await db.exec(await readFile(new URL("../supabase/migrations/20260912_assessment_answer_autosave.sql", import.meta.url), "utf8"));
+    await db.exec(await readFile(new URL("../supabase/migrations/20260913_require_assessment_assignment.sql", import.meta.url), "utf8"));
+    await db.exec(await readFile(new URL("../supabase/migrations/20260914_assessment_active_question_time.sql", import.meta.url), "utf8"));
+    await db.exec(await readFile(new URL("../supabase/migrations/20260915_assessment_room_presence.sql", import.meta.url), "utf8"));
 
     await db.exec(`set role authenticated; select set_config('request.jwt.claim.sub','${student}',false);`);
     await db.exec(`select start_assessment_session('${assessment}')`);
     let state = (await db.query<{ state: LiveState }>(`select assessment_entry_state('${assessment}') as state`)).rows[0].state;
     assert.deepEqual(state, { runStatus: "waiting", studentStatus: "waiting", blockReason: null, kickCount: 0 });
     assert.equal((await db.query<{ count: number }>(`select count(*)::int as count from questions`)).rows[0].count, 0);
+    await assert.rejects(db.exec(`select record_assessment_activity('${assessment}', 10)`), /not active/);
+    await db.exec(`update assessment_sessions set last_activity_at='2026-01-01T00:00:00Z' where assessment_id='${assessment}' and student_id='${student}'; select record_assessment_presence('${assessment}');`);
+    assert.equal((await db.query<{ fresh: boolean }>(`select last_activity_at > '2026-01-01T00:00:00Z'::timestamptz as fresh from assessment_sessions where assessment_id='${assessment}' and student_id='${student}'`)).rows[0].fresh, true);
 
     await db.exec(`select record_assessment_kick('${assessment}', 2)`);
+    assert.equal((await db.query<{ active_seconds: number }>(`select active_seconds from assessment_sessions where assessment_id='${assessment}' and student_id='${student}'`)).rows[0].active_seconds, 0);
     state = (await db.query<{ state: LiveState }>(`select assessment_entry_state('${assessment}') as state`)).rows[0].state;
     assert.equal(state.studentStatus, "blocked");
     await db.exec(`select set_config('request.jwt.claim.sub','${teacher}',false); select grant_assessment_reentry('${assessment}','${student}');`);
@@ -69,12 +76,15 @@ test("assessment waiting, lockdown, teacher grant, and submission are enforced b
     state = (await db.query<{ state: LiveState }>(`select assessment_entry_state('${assessment}') as state`)).rows[0].state;
     assert.equal(state.studentStatus, "active");
     assert.equal((await db.query<{ count: number }>(`select count(*)::int as count from questions`)).rows[0].count, 1);
+    await db.exec(`select record_assessment_activity('${assessment}', 5)`);
+    assert.equal((await db.query<{ active_seconds: number }>(`select active_seconds from assessment_sessions where assessment_id='${assessment}' and student_id='${student}'`)).rows[0].active_seconds, 5);
 
     const question = (await db.query<{ id: string }>(`select id from questions where assessment_id='${assessment}'`)).rows[0].id;
     await db.exec(`select save_assessment_draft_answers('${assessment}', '[{"question_id":"${question}","answer_data":{"answer":"B"}}]'::jsonb)`);
     const savedDraft = (await db.query<{ answer_data: { answer: string } }>(`select answer_data from load_assessment_draft_answers('${assessment}')`)).rows[0];
     assert.equal(savedDraft.answer_data.answer, "B");
     await db.exec(`select record_assessment_kick('${assessment}', 1)`);
+    assert.equal((await db.query<{ active_seconds: number }>(`select active_seconds from assessment_sessions where assessment_id='${assessment}' and student_id='${student}'`)).rows[0].active_seconds, 6);
     await assert.rejects(db.exec(`select save_assessment_draft_answers('${assessment}', '[{"question_id":"${question}","answer_data":{"answer":"C"}}]'::jsonb)`), /not active/);
     const pausedDraft = (await db.query<{ answer_data: { answer: string } }>(`select answer_data from load_assessment_draft_answers('${assessment}')`)).rows[0];
     assert.equal(pausedDraft.answer_data.answer, "B");
@@ -106,9 +116,10 @@ test("assessment waiting, lockdown, teacher grant, and submission are enforced b
     assert.equal(state.studentStatus, "submitted");
     await assert.rejects(db.exec(`insert into student_answers(attempt_id) values ('${attempt}')`), /not active/);
 
-    await assert.rejects(db.exec(`insert into assessments(teacher_id,title) values ('${student}','Forbidden')`), /Only teacher accounts/);
+    await assert.rejects(db.exec(`insert into assessments(teacher_id,classroom_id,title) values ('${student}','${classroom}','Forbidden')`), /teacher|teach/i);
     await db.exec(`select set_config('request.jwt.claim.sub','${teacher}',false);`);
-    const draft = (await db.query<{ is_published: boolean }>(`insert into assessments(teacher_id,title) values ('${teacher}','Draft') returning is_published`)).rows[0];
+    await assert.rejects(db.exec(`insert into assessments(teacher_id,title) values ('${teacher}','Unassigned')`), /assigned to a classroom/);
+    const draft = (await db.query<{ is_published: boolean }>(`insert into assessments(teacher_id,classroom_id,title) values ('${teacher}','${classroom}','Draft') returning is_published`)).rows[0];
     assert.equal(draft.is_published, false);
   } finally {
     await db.close();
