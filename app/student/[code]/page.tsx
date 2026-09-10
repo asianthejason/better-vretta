@@ -93,6 +93,13 @@ type AssessmentEntryState = {
   kickCount: number;
 };
 
+type DraftAnswerPayload = {
+  question_id: string;
+  answer_data: Record<string, unknown>;
+};
+
+type DraftAnswerRow = DraftAnswerPayload & { updated_at: string };
+
 type Question = {
   id: string;
   assessment_id: string;
@@ -262,6 +269,7 @@ export default function StudentAssessmentPage({
   const [questionsReady, setQuestionsReady] = useState(false);
   const [score, setScore] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [autosaveStatus, setAutosaveStatus] = useState<"idle" | "saving" | "saved" | "restored" | "error">("idle");
   const [activeQuestionIndex, setActiveQuestionIndex] = useState(0);
   const [studentPanelView, setStudentPanelView] = useState<StudentPanelView>("split");
   const activeSecondsRef = useRef(0);
@@ -269,6 +277,10 @@ export default function StudentAssessmentPage({
   const accessTokenRef = useRef("");
   const questionsLoadingRef = useRef(false);
   const questionsLoadedRef = useRef(false);
+  const autosaveReadyRef = useRef(false);
+  const draftPayloadRef = useRef<DraftAnswerPayload[]>([]);
+  const savedDraftSignaturesRef = useRef(new Map<string, string>());
+  const draftSaveTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     async function getParams() {
@@ -306,6 +318,7 @@ export default function StudentAssessmentPage({
       if (lockdownEndingRef.current || !assessment) return;
       lockdownEndingRef.current = true;
       setLockdownExit(true);
+      await persistDraftAnswers(assessment.id);
       const seconds = activeSecondsRef.current;
       activeSecondsRef.current = 0;
       const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -364,7 +377,7 @@ export default function StudentAssessmentPage({
     if (entryState?.studentStatus === "active") lockdownEndingRef.current = false;
   }, [entryState?.studentStatus]);
 
-  async function loadQuestions(assessmentId: string) {
+  async function loadQuestions(assessmentId: string, restoreStudentDraft = true) {
     if (questionsLoadedRef.current || questionsLoadingRef.current) return;
     questionsLoadingRef.current = true;
     const { data: questionData, error: questionError } = await supabase.from("questions").select("*").eq("assessment_id", assessmentId).in("question_type", ["multiple-choice", "drag-and-drop"]).order("question_order", { ascending: true });
@@ -375,6 +388,10 @@ export default function StudentAssessmentPage({
       return;
     }
     const typedQuestions = (questionData || []) as Question[];
+    const initialMultipleChoiceAnswers: Record<string, string> = {};
+    const initialShortAnswerResponses: Record<string, ShortAnswerResponses> = {};
+    const initialFillBlankResponses: Record<string, FillBlankResponses> = {};
+    const initialImageOverlayResponses: Record<string, OverlayResponses> = {};
     const initialOrderResponses: SortingOrderResponses = {};
     const initialCategoryResponses: SortingCategoryResponses = {};
     const initialDragDropResponses: Record<string, DragDropPlacements> = {};
@@ -387,10 +404,41 @@ export default function StudentAssessmentPage({
       }
       if (question.question_type === "drag-and-drop") initialDragDropResponses[question.id] = Object.fromEntries(normalizeDragDropData(question.question_data.dragDrop).zones.map((zone) => [zone.id, []]));
     });
+
+    let savedDrafts: DraftAnswerRow[] = [];
+    if (restoreStudentDraft) {
+      const { data, error } = await supabase.rpc("load_assessment_draft_answers", { target_assessment: assessmentId });
+      if (error) {
+        setAutosaveStatus("error");
+      } else {
+        savedDrafts = (data || []) as DraftAnswerRow[];
+      }
+    }
+
+    savedDrafts.forEach((draft) => {
+      const question = typedQuestions.find((candidate) => candidate.id === draft.question_id);
+      if (!question) return;
+      const saved = draft.answer_data;
+      if (question.question_type === "multiple-choice" && typeof saved.answer === "string") initialMultipleChoiceAnswers[question.id] = saved.answer;
+      if (question.question_type === "drag-and-drop" && saved.placements && typeof saved.placements === "object") initialDragDropResponses[question.id] = saved.placements as DragDropPlacements;
+      if (question.question_type === "short-answer" && saved.answers && typeof saved.answers === "object") initialShortAnswerResponses[question.id] = saved.answers as ShortAnswerResponses;
+      if (question.question_type === "fill-in-the-blank" && saved.answers && typeof saved.answers === "object") initialFillBlankResponses[question.id] = saved.answers as FillBlankResponses;
+      if (question.question_type === "image-question" && saved.answers && typeof saved.answers === "object") initialImageOverlayResponses[question.id] = saved.answers as OverlayResponses;
+      if (question.question_type === "sorting-order" && Array.isArray(saved.orderedItemIds)) initialOrderResponses[question.id] = saved.orderedItemIds as string[];
+      if (question.question_type === "sorting-category" && saved.categoryAssignments && typeof saved.categoryAssignments === "object") initialCategoryResponses[question.id] = saved.categoryAssignments as Record<string, string>;
+    });
+
     setQuestions(typedQuestions);
+    setMultipleChoiceAnswers(initialMultipleChoiceAnswers);
+    setShortAnswerResponses(initialShortAnswerResponses);
+    setFillBlankResponses(initialFillBlankResponses);
+    setImageOverlayResponses(initialImageOverlayResponses);
     setDragDropResponses(initialDragDropResponses);
     setSortingOrderResponses(initialOrderResponses);
     setSortingCategoryResponses(initialCategoryResponses);
+    savedDraftSignaturesRef.current = new Map(savedDrafts.map((draft) => [draft.question_id, JSON.stringify(draft.answer_data)]));
+    autosaveReadyRef.current = restoreStudentDraft;
+    if (restoreStudentDraft && savedDrafts.length > 0) setAutosaveStatus("restored");
     questionsLoadedRef.current = true;
     questionsLoadingRef.current = false;
     setQuestionsReady(true);
@@ -409,6 +457,48 @@ export default function StudentAssessmentPage({
     const timer = window.setInterval(() => void refreshEntryState(assessment.id), 2000);
     return () => window.clearInterval(timer);
   }, [assessment, accountRole, submitted, teacherPreview]);
+
+  useEffect(() => {
+    if (questions.length === 0) return;
+    draftPayloadRef.current = questions.map((question) => ({
+      question_id: question.id,
+      answer_data: buildAnswerData(question) as Record<string, unknown>,
+    }));
+    if (!autosaveReadyRef.current || !assessment || teacherPreview || submitted || entryState?.studentStatus !== "active") return;
+    if (draftSaveTimerRef.current !== null) window.clearTimeout(draftSaveTimerRef.current);
+    setAutosaveStatus("saving");
+    draftSaveTimerRef.current = window.setTimeout(() => void persistDraftAnswers(assessment.id), 800);
+    return () => {
+      if (draftSaveTimerRef.current !== null) window.clearTimeout(draftSaveTimerRef.current);
+    };
+    // buildAnswerData reads the response states listed below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assessment, teacherPreview, submitted, entryState?.studentStatus, questions, multipleChoiceAnswers, shortAnswerResponses, fillBlankResponses, imageOverlayResponses, sortingOrderResponses, sortingCategoryResponses, dragDropResponses]);
+
+  async function persistDraftAnswers(assessmentId: string) {
+    if (!autosaveReadyRef.current) return true;
+    if (draftSaveTimerRef.current !== null) {
+      window.clearTimeout(draftSaveTimerRef.current);
+      draftSaveTimerRef.current = null;
+    }
+    const changedAnswers = draftPayloadRef.current.filter((draft) => savedDraftSignaturesRef.current.get(draft.question_id) !== JSON.stringify(draft.answer_data));
+    if (changedAnswers.length === 0) {
+      setAutosaveStatus("saved");
+      return true;
+    }
+    setAutosaveStatus("saving");
+    const { error } = await supabase.rpc("save_assessment_draft_answers", {
+      target_assessment: assessmentId,
+      answer_batch: changedAnswers,
+    });
+    if (error) {
+      setAutosaveStatus("error");
+      return false;
+    }
+    changedAnswers.forEach((draft) => savedDraftSignaturesRef.current.set(draft.question_id, JSON.stringify(draft.answer_data)));
+    setAutosaveStatus("saved");
+    return true;
+  }
 
   async function loadAssessment(code: string) {
     const [{ data: { user } }, { data: { session } }] = await Promise.all([supabase.auth.getUser(), supabase.auth.getSession()]);
@@ -455,7 +545,7 @@ export default function StudentAssessmentPage({
       }
       await refreshEntryState(assessmentData.id);
     } else {
-      await loadQuestions(assessmentData.id);
+      await loadQuestions(assessmentData.id, false);
     }
     setLoading(false);
   }
@@ -865,6 +955,8 @@ export default function StudentAssessmentPage({
       return;
     }
 
+    await persistDraftAnswers(assessment.id);
+
     let totalCorrect = 0;
 
     scoredQuestions.forEach((question) => {
@@ -1071,6 +1163,7 @@ export default function StudentAssessmentPage({
                 Teacher preview
               </span>
             )}
+            {!teacherPreview && <span role="status" className={`hidden text-xs font-semibold sm:inline ${autosaveStatus === "error" ? "text-red-600" : autosaveStatus === "saving" ? "text-blue-600" : "text-emerald-600"}`}>{autosaveStatus === "error" ? "Autosave failed" : autosaveStatus === "saving" ? "Saving…" : autosaveStatus === "restored" ? "Progress restored" : "Progress saved"}</span>}
             {!teacherPreview && (
               <label className="flex items-center gap-2" htmlFor="student-name">
                 <span className="hidden text-sm font-medium text-slate-500 sm:inline">Student</span>

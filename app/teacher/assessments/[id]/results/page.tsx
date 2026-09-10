@@ -1020,22 +1020,38 @@ export default function ResultsPage({
           </div>
         </section>
 
-        <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900">
-          <div className="flex flex-col gap-2 border-b border-slate-800 px-5 py-5 sm:flex-row sm:items-center sm:justify-between">
-            <div><h2 className="text-2xl font-semibold">Assessment room</h2><p className="mt-1 text-sm text-slate-400">The full class list, including students who have not entered the waiting room.</p></div>
-            <span className="text-sm font-semibold text-slate-400">{Object.keys(sessionsByStudent).length} of {assignedStudentIds.length} checked in</span>
+        <section className="mt-8 overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl shadow-slate-950/30">
+          <div className="flex flex-col gap-4 border-b border-slate-700 bg-slate-800/70 px-5 py-5 sm:flex-row sm:items-center sm:justify-between lg:px-7">
+            <div><h2 className="text-2xl font-bold text-white">Assessment room</h2><p className="mt-1 text-sm leading-6 text-slate-300">The full class list, including students who have not entered the waiting room.</p></div>
+            <span className="inline-flex w-fit items-center gap-2 rounded-full border border-blue-400/30 bg-blue-400/10 px-4 py-2 text-sm font-bold text-blue-100"><span className="size-2 rounded-full bg-blue-400" />{Object.keys(sessionsByStudent).length} of {assignedStudentIds.length} checked in</span>
           </div>
           {!assessment.is_published && <p className="border-b border-amber-500/20 bg-amber-500/10 px-5 py-3 text-sm font-semibold text-amber-200">Publish this assessment before students can enter its waiting room.</p>}
-          {assignedStudentIds.length === 0 ? <p className="px-5 py-8 text-slate-400">This assessment does not have a classroom roster.</p> : <div className="divide-y divide-slate-800">
+          {assignedStudentIds.length === 0 ? <p className="px-5 py-8 text-slate-300">This assessment does not have a classroom roster.</p> : <div className="grid gap-3 p-4 sm:p-5">
             {assignedStudentIds.map((studentId) => {
               const student = rosterByStudent[studentId];
               const session = sessionsByStudent[studentId];
               const statusLabel = !session ? "Not in waiting room" : session.status === "waiting" ? "Waiting" : session.status === "active" ? "In assessment" : session.status === "blocked" ? "Access paused" : "Submitted";
-              const statusStyle = !session ? "bg-slate-800 text-slate-400" : session.status === "waiting" ? "bg-amber-500/10 text-amber-200" : session.status === "active" ? "bg-blue-500/10 text-blue-200" : session.status === "blocked" ? "bg-red-500/10 text-red-200" : "bg-emerald-500/10 text-emerald-200";
-              return <div key={studentId} className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-                <div><p className="font-semibold text-white">{student?.full_name?.trim() || student?.email || "Student"}</p><p className="mt-1 text-xs text-slate-500">{student?.email || ""}</p>{session?.block_reason && <p className="mt-2 text-sm font-semibold text-red-300">{session.block_reason}</p>}</div>
-                <div className="flex items-center gap-3"><span className={`rounded-full px-3 py-1.5 text-xs font-bold ${statusStyle}`}>{statusLabel}</span>{session?.status === "blocked" && <button type="button" disabled={grantingStudentId === studentId || runStatus !== "live"} onClick={() => void grantReentry(studentId)} className="rounded-lg bg-white px-3 py-2 text-xs font-bold text-slate-950 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50">{grantingStudentId === studentId ? "Granting…" : "Grant access"}</button>}</div>
-              </div>;
+              const statusStyle = !session ? "border-slate-600 bg-slate-700 text-slate-100" : session.status === "waiting" ? "border-amber-400/40 bg-amber-400/15 text-amber-100" : session.status === "active" ? "border-blue-400/40 bg-blue-400/15 text-blue-100" : session.status === "blocked" ? "border-red-400/50 bg-red-400/15 text-red-100" : "border-emerald-400/40 bg-emerald-400/15 text-emerald-100";
+              const statusDotStyle = !session ? "bg-slate-300" : session.status === "waiting" ? "bg-amber-300" : session.status === "active" ? "bg-blue-300" : session.status === "blocked" ? "bg-red-300" : "bg-emerald-300";
+              const displayName = student?.full_name?.trim() || student?.email || "Student";
+              return <article key={studentId} className={`rounded-xl border p-4 sm:p-5 ${session?.status === "blocked" ? "border-red-400/50 bg-red-950/20" : "border-slate-700 bg-slate-950/45"}`}>
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex min-w-0 items-center gap-3.5">
+                    <span className="grid size-11 shrink-0 place-items-center rounded-full bg-blue-500/20 text-base font-extrabold text-blue-100 ring-1 ring-blue-400/30" aria-hidden="true">{displayName.charAt(0).toUpperCase()}</span>
+                    <div className="min-w-0"><p className="truncate text-lg font-bold text-white">{displayName}</p><p className="mt-0.5 truncate text-sm font-medium text-slate-300">{student?.email || "No email available"}</p></div>
+                  </div>
+                  <div className="shrink-0 sm:text-right">
+                    <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">Current status</p>
+                    <span className={`inline-flex items-center gap-2 rounded-full border px-3.5 py-2 text-sm font-extrabold ${statusStyle}`}><span className={`size-2 rounded-full ${statusDotStyle}`} />{statusLabel}</span>
+                  </div>
+                </div>
+                {session && <div className="mt-4 grid gap-2 border-t border-slate-700/80 pt-4 text-sm sm:grid-cols-3">
+                  <div><p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Checked in</p><p className="mt-1 font-semibold text-slate-200">{formatDate(session.first_opened_at)}</p></div>
+                  <div><p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Active time</p><p className="mt-1 font-semibold text-slate-200">{formatActiveMinutes(session.active_seconds)}</p></div>
+                  <div><p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Lockdown exits</p><p className={`mt-1 font-semibold ${session.kick_count > 0 ? "text-red-200" : "text-slate-200"}`}>{session.kick_count}</p></div>
+                </div>}
+                {session?.block_reason && <div className="mt-4 flex flex-col gap-3 rounded-xl border border-red-400/40 bg-red-500/15 p-3 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-start gap-3"><span className="grid size-7 shrink-0 place-items-center rounded-full bg-red-400 text-sm font-black text-red-950">!</span><div><p className="text-xs font-bold uppercase tracking-wider text-red-200">Lockdown warning</p><p className="mt-0.5 text-sm font-bold text-white">{session.block_reason}</p></div></div><button type="button" disabled={grantingStudentId === studentId || runStatus === "ended"} title={runStatus === "ended" ? "Start the assessment again before granting access" : "Restore this student's assessment access"} onClick={() => void grantReentry(studentId)} className="shrink-0 rounded-lg bg-white px-4 py-2.5 text-sm font-extrabold text-slate-950 shadow-sm transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50">{grantingStudentId === studentId ? "Granting…" : "Grant access"}</button></div>}
+              </article>;
             })}
           </div>}
         </section>
