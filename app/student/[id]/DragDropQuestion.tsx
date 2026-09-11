@@ -9,6 +9,7 @@ export default function DragDropQuestion({ data, placements, onChange }: { data:
   const itemIdsKey = data.items.map((item) => item.id).join("|");
   const [itemOrder, setItemOrder] = useState(() => data.items.map((item) => item.id));
   const locationBoxSize = getLocationBoxSize(data.items);
+  const locationCanvasBoxStyle = { width: `${locationBoxSize.width / 10}cqw`, height: `${locationBoxSize.height / 10}cqw` };
 
   useEffect(() => {
     const nextOrder = data.items.map((item) => item.id);
@@ -47,8 +48,8 @@ export default function DragDropQuestion({ data, placements, onChange }: { data:
   const drop = (event: DragEvent, zoneId: string) => { event.preventDefault(); const id = event.dataTransfer.getData("text/plain"); if (id) place(id, zoneId); };
   const itemCard = (itemId: string, fitLocationTarget = false) => {
     const item = data.items.find((candidate) => candidate.id === itemId); if (!item) return null;
-    return <button type="button" draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", item.id)} onClick={() => setSelectedItemId(item.id)} style={data.preset === "locations" ? fitLocationTarget ? { width: "100%", height: "100%" } : locationBoxSize : undefined} className={`${data.preset === "categories" ? "min-w-32 rounded-none border-slate-500 px-4 py-2.5 text-center font-serif font-semibold shadow-none" : data.preset === "sequence" ? "flex h-full w-full flex-col items-center justify-center rounded-lg border-slate-300 px-3 py-2 text-center font-medium shadow-sm" : data.preset === "locations" ? "flex shrink-0 flex-col items-center justify-center rounded border-slate-400 px-3 py-2 text-center text-sm font-medium shadow-sm" : "rounded-lg border-slate-300 px-4 py-3 text-left font-medium shadow-sm"} box-border border bg-white text-black transition hover:border-blue-600 ${selectedItemId === item.id ? "border-blue-600 ring-2 ring-blue-200" : ""}`}>
-      {item.imageUrl && <img src={item.imageUrl} alt="" className={`${data.preset === "locations" ? "mb-1 min-h-0 max-h-20 max-w-28 flex-1" : "mb-2 max-h-28 max-w-full"} object-contain`} />}<span>{item.content}</span>
+    return <button type="button" draggable onDragStart={(e) => e.dataTransfer.setData("text/plain", item.id)} onClick={() => setSelectedItemId(item.id)} style={data.preset === "locations" ? { ...(fitLocationTarget ? { width: "100%", height: "100%" } : locationCanvasBoxStyle), padding: "0.8cqw 1.2cqw", fontSize: "1.4cqw" } : undefined} className={`${data.preset === "categories" ? "min-w-32 rounded-none border-slate-500 px-4 py-2.5 text-center font-serif font-semibold shadow-none" : data.preset === "sequence" ? "flex h-full w-full flex-col items-center justify-center rounded-lg border-slate-300 px-3 py-2 text-center font-medium shadow-sm" : data.preset === "locations" ? "flex shrink-0 flex-col items-center justify-center rounded border-slate-400 text-center font-medium shadow-sm" : "rounded-lg border-slate-300 px-4 py-3 text-left font-medium shadow-sm"} box-border border bg-white text-black transition hover:border-blue-600 ${selectedItemId === item.id ? "border-blue-600 ring-2 ring-blue-200" : ""}`}>
+      {item.imageUrl && <img src={item.imageUrl} alt="" style={data.preset === "locations" ? { maxHeight: "8cqw", maxWidth: "11.2cqw", marginBottom: "0.4cqw" } : undefined} className={`${data.preset === "locations" ? "min-h-0 flex-1" : "mb-2 max-h-28 max-w-full"} object-contain`} />}<span>{item.content}</span>
     </button>;
   };
   const zoneCard = (zone: DragDropData["zones"][number]) => {
@@ -88,15 +89,15 @@ export default function DragDropQuestion({ data, placements, onChange }: { data:
           </div>
         </div>
       </div>
-    ) : data.preset === "locations" ? <div className={`relative overflow-hidden border border-slate-300 bg-slate-100 ${data.backgroundImageUrl ? "" : "aspect-video"}`}>
+    ) : data.preset === "locations" ? <div style={{ containerType: "inline-size" }} className={`relative overflow-hidden border border-slate-300 bg-slate-100 ${data.backgroundImageUrl ? "" : "aspect-video"}`}>
       {data.backgroundImageUrl ? <img src={data.backgroundImageUrl} alt="Match locations diagram" className="block h-auto w-full select-none object-contain" draggable={false} /> : <div className="absolute inset-0" />}
       <div className="absolute inset-0">
         {(data.canvasElements || []).map((element) => <div key={element.id} className="pointer-events-none absolute" style={{ left: `${element.x}%`, top: `${element.y}%`, width: `${element.width}%`, height: `${element.height}%` }}><LocationCanvasElementContent element={element} /></div>)}
-        <div className={`absolute z-30 flex w-max gap-2 ${data.choiceBankDirection === "vertical" ? "flex-col" : "flex-row"}`} style={{ left: `${data.choiceBankX ?? 8}%`, top: `${data.choiceBankY ?? 6}%` }}>{bank.map((item) => <span key={item.id}>{itemCard(item.id)}</span>)}</div>
+        <div className={`absolute z-30 flex w-max ${data.choiceBankDirection === "vertical" ? "flex-col" : "flex-row"}`} style={{ left: `${data.choiceBankX ?? 8}%`, top: `${data.choiceBankY ?? 6}%`, gap: "0.8cqw" }}>{bank.map((item) => <span key={item.id}>{itemCard(item.id)}</span>)}</div>
         {data.zones.map((zone, zoneIndex) => {
         const placedItemId = (placements[zone.id] || [])[0];
-        return <div key={zone.id} onDragOver={(event) => event.preventDefault()} onDrop={(event) => drop(event, zone.id)} onClick={() => selectedItemId && place(selectedItemId, zone.id)} className={`absolute z-20 box-border flex items-center justify-center bg-white/80 text-center text-xs font-semibold text-slate-800 ${data.settings.showZoneOutlines ? "border-2 border-dashed border-slate-500" : "border border-transparent"}`} style={{ left: `${zone.x ?? 10}%`, top: `${zone.y ?? 10}%`, ...locationBoxSize }}>
-          {data.settings.showTargetLabels && <span className="pointer-events-none absolute bottom-full left-1/2 mb-1 -translate-x-1/2 whitespace-nowrap text-sm font-bold text-slate-900">{zone.label || `Target ${zoneIndex + 1}`}</span>}
+        return <div key={zone.id} onDragOver={(event) => event.preventDefault()} onDrop={(event) => drop(event, zone.id)} onClick={() => selectedItemId && place(selectedItemId, zone.id)} className={`absolute z-20 box-border flex items-center justify-center bg-white/80 text-center font-semibold text-slate-800 ${data.settings.showZoneOutlines ? "border-2 border-dashed border-slate-500" : "border border-transparent"}`} style={{ left: `${zone.x ?? 10}%`, top: `${zone.y ?? 10}%`, ...locationCanvasBoxStyle, fontSize: "1.2cqw" }}>
+          {data.settings.showTargetLabels && <span style={{ marginBottom: "0.4cqw", fontSize: "1.4cqw" }} className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 whitespace-nowrap font-bold text-slate-900">{zone.label || `Target ${zoneIndex + 1}`}</span>}
           {placedItemId ? <span className="relative h-full w-full">{itemCard(placedItemId, true)}<button type="button" onClick={(event) => { event.stopPropagation(); onChange({ ...placements, [zone.id]: [] }); }} className="absolute -right-2 -top-2 z-10 h-6 w-6 rounded-full bg-slate-800 text-xs text-white">×</button></span> : null}
         </div>;
       })}</div>

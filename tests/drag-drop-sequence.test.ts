@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getLocationBoxSize, gradeDragDrop, getSequenceTargetCount, isDragDropAnswered, normalizeDragDropData, type DragDropData } from "../lib/dragDrop";
+import { getCanvasNumberLine, getCanvasShape, getCanvasTextHtml, getCanvasTrackSizes, getLocationBoxSize, gradeDragDrop, getSequenceTargetCount, isDragDropAnswered, normalizeDragDropData, type DragDropData } from "../lib/dragDrop";
 
 const sequence: DragDropData = {
   preset: "sequence",
@@ -69,11 +69,37 @@ test("location canvas content survives normalization", () => {
     preset: "locations",
     canvasElements: [
       { id: "image", type: "image", x: 5, y: 6, width: 30, height: 25, imageUrl: "https://example.test/diagram.png" },
-      { id: "text", type: "text", x: 10, y: 40, width: 25, height: 12, text: "Label" },
+      { id: "text", type: "text", x: 10, y: 40, width: 25, height: 12, text: "Label", textHtml: "<div><strong>Lab</strong><em>el</em></div>" },
       { id: "table", type: "table", x: 40, y: 40, width: 35, height: 25, rows: 2, columns: 2, cells: [["A", "B"], ["C", "D"]] },
     ],
   });
 
   assert.equal(normalized.canvasElements?.length, 3);
+  assert.equal(normalized.canvasElements?.[1].textHtml, "<div><strong>Lab</strong><em>el</em></div>");
   assert.equal(normalized.canvasElements?.[2].cells?.[1][1], "D");
+});
+
+test("table track sizes normalize while preserving custom proportions", () => {
+  assert.deepEqual(getCanvasTrackSizes(2), [50, 50]);
+  assert.deepEqual(getCanvasTrackSizes(2, [25, 75]), [25, 75]);
+  assert.deepEqual(getCanvasTrackSizes(3, [25, 75]), [100 / 3, 100 / 3, 100 / 3]);
+});
+
+test("legacy whole-text formatting converts to rich text safely", () => {
+  assert.equal(
+    getCanvasTextHtml({ text: "A < B\nsecond", textAlign: "center", bold: true, italic: true, underline: true }),
+    '<div style="text-align: center"><strong><em><u>A &lt; B<br>second</u></em></strong></div>',
+  );
+});
+
+test("number line settings are bounded and discard points outside its range", () => {
+  assert.deepEqual(
+    getCanvasNumberLine({ numberLine: { min: -2, max: 2, divisions: 100, labelEvery: 0, showArrows: false, points: [-3, -1.5, 0, 2, 3] } }),
+    { min: -2, max: 2, divisions: 40, labelEvery: 4, showArrows: false, points: [-1.5, 0, 2] },
+  );
+});
+
+test("shape settings preserve valid shapes and bound line thickness", () => {
+  assert.deepEqual(getCanvasShape({ shape: { kind: "triangle", thickness: 30 } }), { kind: "triangle", thickness: 12, lineAxis: "horizontal", lineDirection: "descending" });
+  assert.deepEqual(getCanvasShape({ shape: { kind: "circle", thickness: 0 } }), { kind: "circle", thickness: 1, lineAxis: "horizontal", lineDirection: "descending" });
 });

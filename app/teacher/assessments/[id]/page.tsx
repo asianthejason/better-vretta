@@ -340,20 +340,21 @@ function SequencePreview({ data, itemPreviewUrls = {} }: { data: DragDropData; i
 function LocationPreview({ data, itemPreviewUrls = {} }: { data: DragDropData; itemPreviewUrls?: Record<string, string> }) {
   const previewItems = data.items.map((item) => ({ ...item, imageUrl: itemPreviewUrls[item.id] || item.imageUrl }));
   const boxSize = getLocationBoxSize(previewItems);
+  const boxCanvasStyle = { width: `${boxSize.width / 10}cqw`, height: `${boxSize.height / 10}cqw` };
   return (
-    <div className={`relative overflow-hidden border border-slate-300 bg-slate-100 ${data.backgroundImageUrl ? "" : "aspect-video"}`}>
+    <div style={{ containerType: "inline-size" }} className={`relative overflow-hidden border border-slate-300 bg-slate-100 ${data.backgroundImageUrl ? "" : "aspect-video"}`}>
       {data.backgroundImageUrl ? <img src={data.backgroundImageUrl} alt="Match locations background" className="block h-auto w-full object-contain" /> : <div className="absolute inset-0 grid place-items-center text-sm text-slate-500">Location canvas</div>}
       <div className="absolute inset-0">
         {(data.canvasElements || []).map((element) => <div key={element.id} className="absolute" style={{ left: `${element.x}%`, top: `${element.y}%`, width: `${element.width}%`, height: `${element.height}%` }}><LocationCanvasElementContent element={element} /></div>)}
-        <div className={`absolute z-30 flex w-max gap-2 ${data.choiceBankDirection === "vertical" ? "flex-col" : "flex-row"}`} style={{ left: `${data.choiceBankX ?? 8}%`, top: `${data.choiceBankY ?? 6}%` }}>
-          {previewItems.map((item) => <div key={item.id} style={boxSize} className="box-border flex shrink-0 flex-col items-center justify-center rounded border border-slate-400 bg-white px-3 py-2 text-center text-sm font-medium text-black shadow-sm">
-            {item.imageUrl && <img src={item.imageUrl} alt="" className="mb-1 min-h-0 max-h-20 max-w-28 flex-1 object-contain" />}
+        <div className={`absolute z-30 flex w-max ${data.choiceBankDirection === "vertical" ? "flex-col" : "flex-row"}`} style={{ left: `${data.choiceBankX ?? 8}%`, top: `${data.choiceBankY ?? 6}%`, gap: "0.8cqw" }}>
+          {previewItems.map((item) => <div key={item.id} style={{ ...boxCanvasStyle, padding: "0.8cqw 1.2cqw", fontSize: "1.4cqw" }} className="box-border flex shrink-0 flex-col items-center justify-center rounded border border-slate-400 bg-white text-center font-medium text-black shadow-sm">
+            {item.imageUrl && <img src={item.imageUrl} alt="" style={{ maxHeight: "8cqw", maxWidth: "11.2cqw", marginBottom: "0.4cqw" }} className="min-h-0 flex-1 object-contain" />}
             <span>{item.content || "Untitled choice"}</span>
           </div>)}
         </div>
         {data.zones.map((zone, index) => (
-          <div key={zone.id} className={`absolute z-20 box-border flex items-center justify-center bg-white/75 text-center text-xs font-semibold text-slate-800 ${data.settings.showZoneOutlines ? "border-2 border-dashed border-slate-500" : "border border-transparent"}`} style={{ left: `${zone.x ?? 10}%`, top: `${zone.y ?? 10}%`, ...boxSize }}>
-            {data.settings.showTargetLabels ? <span className="pointer-events-none absolute bottom-full left-1/2 mb-1 -translate-x-1/2 whitespace-nowrap text-sm font-bold text-slate-900">{zone.label || `Target ${index + 1}`}</span> : null}
+          <div key={zone.id} className={`absolute z-20 box-border flex items-center justify-center bg-white/75 text-center font-semibold text-slate-800 ${data.settings.showZoneOutlines ? "border-2 border-dashed border-slate-500" : "border border-transparent"}`} style={{ left: `${zone.x ?? 10}%`, top: `${zone.y ?? 10}%`, ...boxCanvasStyle, fontSize: "1.2cqw" }}>
+            {data.settings.showTargetLabels ? <span style={{ marginBottom: "0.4cqw", fontSize: "1.4cqw" }} className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 whitespace-nowrap font-bold text-slate-900">{zone.label || `Target ${index + 1}`}</span> : null}
           </div>
         ))}
       </div>
@@ -531,6 +532,7 @@ export default function AssessmentEditorPage({
 
   const [questionType, setQuestionType] =
     useState<QuestionType>("multiple-choice");
+  const [questionBuilderStep, setQuestionBuilderStep] = useState(1);
   const [dragDropData, setDragDropData] = useState<DragDropData>(() => createDefaultDragDropData());
   const [selectedDragDropItemFiles, setSelectedDragDropItemFiles] = useState<Record<string, File>>({});
   const [dragDropItemPreviewUrls, setDragDropItemPreviewUrls] = useState<Record<string, string>>({});
@@ -906,6 +908,7 @@ export default function AssessmentEditorPage({
 
   function resetQuestionForm() {
     setQuestionType("multiple-choice");
+    setQuestionBuilderStep(1);
     setDragDropData(createDefaultDragDropData());
     selectedDragDropItemFilesRef.current = {};
     setSelectedDragDropItemFiles({});
@@ -2364,6 +2367,7 @@ export default function AssessmentEditorPage({
 
   function startEditingQuestion(question: Question) {
     setQuestionModalOpen(true);
+    setQuestionBuilderStep(4);
     setChoiceHtml(["", "", "", ""]);
     setChoiceTableEnabled(false);
     setChoiceTableHeaders(["Column 1", "Column 2"]);
@@ -3007,31 +3011,29 @@ export default function AssessmentEditorPage({
           )}
 
           <div className="mt-6 space-y-4">
-            <div>
-              <p className="text-sm text-slate-300">Question Type</p>
+            {questionBuilderStep >= 1 && <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+              <p className="text-xs font-bold uppercase tracking-[0.16em] text-blue-600">Step 1 · Question type</p>
+              <h3 className="mt-2 text-lg font-semibold text-slate-950">What kind of question are you making?</h3>
               <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                <button type="button" onClick={() => setQuestionType("multiple-choice")} className={`rounded-xl border px-4 py-3 text-left font-semibold text-black ${questionType === "multiple-choice" ? "border-blue-400 bg-blue-100" : "border-slate-300 bg-white hover:border-blue-300 hover:bg-blue-50"}`}>Multiple Choice</button>
-                <button type="button" onClick={() => setQuestionType("drag-and-drop")} className={`rounded-xl border px-4 py-3 text-left font-semibold text-black ${questionType === "drag-and-drop" ? "border-blue-400 bg-blue-100" : "border-slate-300 bg-white hover:border-blue-300 hover:bg-blue-50"}`}>Drag &amp; Drop</button>
+                <button type="button" onClick={() => { setQuestionType("multiple-choice"); setQuestionBuilderStep(2); }} aria-pressed={questionBuilderStep >= 2 && questionType === "multiple-choice"} className={`rounded-xl border px-4 py-4 text-left font-semibold text-black transition ${questionBuilderStep >= 2 && questionType === "multiple-choice" ? "border-blue-500 bg-blue-100 ring-2 ring-blue-200" : "border-slate-300 bg-white hover:border-blue-400 hover:bg-blue-50"}`}>Multiple Choice<span className="mt-1 block text-xs font-normal text-slate-500">Students select one correct answer.</span></button>
+                <button type="button" onClick={() => { setQuestionType("drag-and-drop"); setQuestionBuilderStep(2); }} aria-pressed={questionBuilderStep >= 2 && questionType === "drag-and-drop"} className={`rounded-xl border px-4 py-4 text-left font-semibold text-black transition ${questionBuilderStep >= 2 && questionType === "drag-and-drop" ? "border-blue-500 bg-blue-100 ring-2 ring-blue-200" : "border-slate-300 bg-white hover:border-blue-400 hover:bg-blue-50"}`}>Drag &amp; Drop<span className="mt-1 block text-xs font-normal text-slate-500">Students move choices into targets or positions.</span></button>
               </div>
-            </div>
+            </div>}
 
-            <div>
-              <label className="text-sm text-slate-300">Student Page Layout</label>
+            {questionBuilderStep >= 2 && <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+              <div><p className="text-xs font-bold uppercase tracking-[0.16em] text-blue-600">Step 2 · Student layout</p><h3 className="mt-2 text-lg font-semibold text-slate-950">How should the student page be arranged?</h3></div>
               <div className="mt-2 grid gap-3 sm:grid-cols-2">
                 <button
                   type="button"
-                  onClick={() => setQuestionLayout("standard")}
-                  className={`rounded-xl border p-4 text-left transition ${
-                    questionLayout === "standard"
-                      ? "border-blue-500 bg-blue-950/40 ring-2 ring-blue-500/20"
-                      : "border-slate-700 bg-slate-950 hover:border-slate-600"
-                  }`}
+                  onClick={() => { setQuestionLayout("standard"); setQuestionBuilderStep(questionType === "drag-and-drop" ? 3 : 4); }}
+                  aria-pressed={questionBuilderStep >= 3 && questionLayout === "standard"}
+                  className={`rounded-xl border p-4 text-left text-slate-900 transition ${questionBuilderStep >= 3 && questionLayout === "standard" ? "border-blue-500 bg-blue-100 ring-2 ring-blue-200" : "border-slate-300 bg-white hover:border-blue-400 hover:bg-blue-50"}`}
                 >
                   <span className="block font-semibold">Standard</span>
-                  <span className="mt-1 block text-xs leading-5 text-slate-400">
+                  <span className="mt-1 block text-xs leading-5 text-slate-500">
                     Show the question and response together in the answer area.
                   </span>
-                  <span className="mt-3 block h-10 rounded-md border border-slate-600 bg-slate-800" />
+                  <span className="mt-3 block h-10 rounded-md border border-slate-300 bg-slate-100" />
                 </button>
 
                 <button
@@ -3039,25 +3041,29 @@ export default function AssessmentEditorPage({
                   onClick={() => {
                     setQuestionLayout("split");
                     setSplitEditorTab("left");
+                    setQuestionBuilderStep(questionType === "drag-and-drop" ? 3 : 4);
                   }}
-                  className={`rounded-xl border p-4 text-left transition ${
-                    questionLayout === "split"
-                      ? "border-blue-500 bg-blue-950/40 ring-2 ring-blue-500/20"
-                      : "border-slate-700 bg-slate-950 hover:border-slate-600"
-                  }`}
+                  aria-pressed={questionBuilderStep >= 3 && questionLayout === "split"}
+                  className={`rounded-xl border p-4 text-left text-slate-900 transition ${questionBuilderStep >= 3 && questionLayout === "split" ? "border-blue-500 bg-blue-100 ring-2 ring-blue-200" : "border-slate-300 bg-white hover:border-blue-400 hover:bg-blue-50"}`}
                 >
                   <span className="block font-semibold">Left + Right Split</span>
-                  <span className="mt-1 block text-xs leading-5 text-slate-400">
+                  <span className="mt-1 block text-xs leading-5 text-slate-500">
                     Put reference material on the left and the question on the right.
                   </span>
                   <span className="mt-3 grid h-10 grid-cols-2 gap-1">
-                    <span className="rounded-l-md border border-blue-500/60 bg-blue-950" />
-                    <span className="rounded-r-md border border-blue-500/60 bg-slate-800" />
+                    <span className="rounded-l-md border border-blue-300 bg-blue-100" />
+                    <span className="rounded-r-md border border-blue-300 bg-slate-100" />
                   </span>
                 </button>
               </div>
-            </div>
+            </div>}
 
+            {questionBuilderStep >= 3 && questionType === "drag-and-drop" && <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
+              <div className="mb-4"><p className="text-xs font-bold uppercase tracking-[0.16em] text-blue-600">Step 3 · Drag-and-drop layout</p><h3 className="mt-2 text-lg font-semibold text-slate-950">Choose how students will place their answers</h3></div>
+              <DragDropPresetPicker value={dragDropData} onChange={(nextData) => { setDragDropData(nextData); setQuestionBuilderStep(4); }} />
+            </div>}
+
+            {questionBuilderStep === 4 && <>
             <hr className="border-slate-700" />
 
             {questionLayout === "split" && (
@@ -3263,12 +3269,6 @@ export default function AssessmentEditorPage({
               )}
 
               <section className={`min-w-0 ${questionLayout === "split" && splitEditorTab !== "right" ? "hidden" : ""}`}>
-
-            {questionType === "drag-and-drop" && (
-              <div className="mb-6">
-                <DragDropPresetPicker value={dragDropData} onChange={setDragDropData} />
-              </div>
-            )}
 
             <div>
               <label className="text-base font-semibold text-slate-200">
@@ -4256,6 +4256,7 @@ export default function AssessmentEditorPage({
             )}
               </section>
             </div>
+            </>}
 
             <div className="mt-8 overflow-hidden rounded-2xl border border-slate-700 bg-white text-slate-900 shadow-xl">
                 <div className="border-b border-slate-200 bg-slate-50 px-5 py-3">
@@ -4491,7 +4492,7 @@ export default function AssessmentEditorPage({
                 </div>
               </div>
 
-            <div className="flex flex-wrap gap-3">
+            {questionBuilderStep === 4 && <div className="flex flex-wrap gap-3">
               {editingQuestionId ? (
                 <>
                   <button
@@ -4518,7 +4519,7 @@ export default function AssessmentEditorPage({
                   {uploadingImage ? "Uploading..." : "Save Question"}
                 </button>
               )}
-            </div>
+            </div>}
           </div>
           </section>
         </div>

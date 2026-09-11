@@ -21,7 +21,7 @@ export type DragDropZone = {
 
 export type DragDropCanvasElement = {
   id: string;
-  type: "image" | "text" | "table";
+  type: "image" | "text" | "table" | "number-line" | "shape";
   x: number;
   y: number;
   width: number;
@@ -29,11 +29,32 @@ export type DragDropCanvasElement = {
   imageUrl?: string;
   imagePath?: string;
   text?: string;
+  textHtml?: string;
   fontSize?: number;
+  textAlign?: "left" | "center" | "right";
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
   rows?: number;
   columns?: number;
   cells?: string[][];
   showBorders?: boolean;
+  columnWidths?: number[];
+  rowHeights?: number[];
+  numberLine?: {
+    min: number;
+    max: number;
+    divisions: number;
+    labelEvery: number;
+    showArrows: boolean;
+    points: number[];
+  };
+  shape?: {
+    kind: "line" | "circle" | "rectangle" | "triangle";
+    thickness: number;
+    lineAxis?: "horizontal" | "vertical" | "diagonal";
+    lineDirection?: "ascending" | "descending";
+  };
 };
 
 export type DragDropData = {
@@ -63,6 +84,58 @@ export type DragDropData = {
 export type DragDropPlacements = Record<string, string[]>;
 
 export type DragDropBoxSize = { width: number; height: number };
+
+export function getCanvasShape(element: Pick<DragDropCanvasElement, "shape">) {
+  const kind = ["line", "circle", "rectangle", "triangle"].includes(element.shape?.kind || "")
+    ? element.shape!.kind
+    : "line";
+  const requestedThickness = Number(element.shape?.thickness);
+  const thickness = Number.isFinite(requestedThickness)
+    ? Math.max(1, Math.min(12, requestedThickness))
+    : 3;
+  const lineAxis = ["horizontal", "vertical", "diagonal"].includes(element.shape?.lineAxis || "")
+    ? element.shape!.lineAxis!
+    : "horizontal" as const;
+  return { kind, thickness, lineAxis, lineDirection: element.shape?.lineDirection === "ascending" ? "ascending" as const : "descending" as const };
+}
+
+export function getCanvasNumberLine(element: Pick<DragDropCanvasElement, "numberLine">) {
+  const saved = element.numberLine;
+  const min = Number.isFinite(saved?.min) ? saved!.min : -2;
+  const requestedMax = Number.isFinite(saved?.max) ? saved!.max : 2;
+  const max = requestedMax > min ? requestedMax : min + 1;
+  const divisions = Math.max(1, Math.min(40, Math.trunc(saved?.divisions || 16)));
+  const labelEvery = Math.max(1, Math.min(divisions, Math.trunc(saved?.labelEvery || 4)));
+  const points = (saved?.points || []).filter((point) => Number.isFinite(point) && point >= min && point <= max);
+  return { min, max, divisions, labelEvery, showArrows: saved?.showArrows ?? true, points };
+}
+
+export function getCanvasTextHtml(element: Pick<DragDropCanvasElement, "text" | "textHtml" | "textAlign" | "bold" | "italic" | "underline">) {
+  if (element.textHtml) return element.textHtml;
+
+  let html = (element.text || "Text")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;")
+    .replaceAll("\n", "<br>");
+  if (element.underline) html = `<u>${html}</u>`;
+  if (element.italic) html = `<em>${html}</em>`;
+  if (element.bold) html = `<strong>${html}</strong>`;
+  return element.textAlign && element.textAlign !== "left"
+    ? `<div style="text-align: ${element.textAlign}">${html}</div>`
+    : html;
+}
+
+export function getCanvasTrackSizes(count: number, saved?: number[]) {
+  const safeCount = Math.max(1, Math.trunc(count) || 1);
+  if (!saved || saved.length !== safeCount || saved.some((size) => !Number.isFinite(size) || size <= 0)) {
+    return Array.from({ length: safeCount }, () => 100 / safeCount);
+  }
+  const total = saved.reduce((sum, size) => sum + size, 0);
+  return saved.map((size) => (size / total) * 100);
+}
 
 export function getLocationBoxSize(items: DragDropItem[]): DragDropBoxSize {
   const widths = items.map((item) => Math.max(0, item.content.trim().length * 8.5));
