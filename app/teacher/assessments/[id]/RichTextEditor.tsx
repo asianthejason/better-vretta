@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { buildRootMathHtml, buildStructuredMathHtml, type StructuredMathKind, type StructuredMathValues } from "@/lib/mathExpressions";
 
 const FONT_SIZE_STEPS = [10, 13, 16, 18, 24, 32, 48];
 
@@ -20,6 +21,8 @@ type ActiveFormats = {
   fontSize: string;
 };
 
+type EditableMathKind = StructuredMathKind | "root";
+
 export default function RichTextEditor({
   value,
   onChange,
@@ -30,6 +33,8 @@ export default function RichTextEditor({
   const savedRangeRef = useRef<Range | null>(null);
   const [showTableControls, setShowTableControls] = useState(false);
   const [showMathSymbols, setShowMathSymbols] = useState(false);
+  const [structuredMathKind, setStructuredMathKind] = useState<EditableMathKind>("summation");
+  const [structuredMathValues, setStructuredMathValues] = useState<StructuredMathValues>({ lower: "i = 1", upper: "n", expression: "", variable: "x", approach: "0", numerator: "", denominator: "" });
   const [showRootControls, setShowRootControls] = useState(false);
   const [rootIndex, setRootIndex] = useState("3");
   const [rootValue, setRootValue] = useState("");
@@ -105,10 +110,12 @@ export default function RichTextEditor({
     const allowedTags = new Set([
       "DIV", "P", "BR", "B", "STRONG", "I", "EM", "FONT", "SUB", "SUP",
       "TABLE", "TBODY", "THEAD", "TR", "TH", "TD",
+      "MATH", "MSTYLE", "MROW", "MO", "MI", "MN", "MTEXT", "MUNDER",
+      "MOVER", "MUNDEROVER", "MSUB", "MSUP", "MSUBSUP", "MFRAC", "MSQRT", "MROOT",
     ]);
 
     Array.from(copy.querySelectorAll("*")).forEach((element) => {
-      if (!allowedTags.has(element.tagName)) {
+      if (!allowedTags.has(element.tagName.toUpperCase())) {
         element.replaceWith(...Array.from(element.childNodes));
         return;
       }
@@ -120,7 +127,13 @@ export default function RichTextEditor({
           element.tagName === "TABLE" && attribute.name === "data-border";
         const keepTextBox =
           element.tagName === "DIV" && attribute.name === "data-text-box";
-        if (!keepFontSize && !keepTableBorder && !keepTextBox) {
+        const keepMathType =
+          element.tagName.toUpperCase() === "MATH" && attribute.name === "data-math-expression";
+        const keepMathEditing =
+          element.tagName.toUpperCase() === "MATH" && attribute.name === "contenteditable" && attribute.value === "false";
+        const keepDisplayStyle =
+          element.tagName.toUpperCase() === "MSTYLE" && attribute.name === "displaystyle" && attribute.value === "true";
+        if (!keepFontSize && !keepTableBorder && !keepTextBox && !keepMathType && !keepMathEditing && !keepDisplayStyle) {
           element.removeAttribute(attribute.name);
         }
       });
@@ -368,23 +381,21 @@ export default function RichTextEditor({
     const index = rootIndex.trim();
     if (!editor || !index) return;
 
-    const root = document.createDocumentFragment();
-    const indexElement = document.createElement("sup");
-    indexElement.textContent = index;
-    const rootSymbol = document.createTextNode("√");
-    const rootContent = document.createTextNode(rootValue.trim());
-    root.append(indexElement, rootSymbol, rootContent);
+    const template = document.createElement("template");
+    template.innerHTML = buildRootMathHtml(index, rootValue);
+    const typingPoint = document.createTextNode("\u200B");
+    template.content.appendChild(typingPoint);
 
     const range = savedRangeRef.current;
     if (range && editor.contains(range.commonAncestorContainer)) {
       range.deleteContents();
-      range.insertNode(root);
+      range.insertNode(template.content);
     } else {
-      editor.append(indexElement, rootSymbol, rootContent);
+      editor.appendChild(template.content);
     }
 
     const nextRange = document.createRange();
-    nextRange.setStartAfter(rootContent);
+    nextRange.setStart(typingPoint, typingPoint.length);
     nextRange.collapse(true);
     const selection = window.getSelection();
     selection?.removeAllRanges();
@@ -392,6 +403,42 @@ export default function RichTextEditor({
     savedRangeRef.current = null;
     setShowRootControls(false);
     setRootValue("");
+    editor.focus();
+    emitChange();
+  }
+
+  function updateStructuredMathValue(field: keyof StructuredMathValues, value: string) {
+    setStructuredMathValues((current) => ({ ...current, [field]: value }));
+  }
+
+  function insertStructuredMath() {
+    if (structuredMathKind === "root") {
+      insertCustomRoot();
+      return;
+    }
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    const template = document.createElement("template");
+    template.innerHTML = buildStructuredMathHtml(structuredMathKind, structuredMathValues);
+    const typingPoint = document.createTextNode("\u200B");
+    template.content.appendChild(typingPoint);
+    const range = savedRangeRef.current;
+    if (range && editor.contains(range.commonAncestorContainer)) {
+      range.deleteContents();
+      range.insertNode(template.content);
+    } else {
+      editor.appendChild(template.content);
+    }
+
+    const nextRange = document.createRange();
+    nextRange.setStart(typingPoint, typingPoint.length);
+    nextRange.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(nextRange);
+    savedRangeRef.current = null;
+    setShowMathSymbols(false);
     editor.focus();
     emitChange();
   }
@@ -601,8 +648,8 @@ export default function RichTextEditor({
         </button>
         <button
           type="button"
-          title="Insert a root"
-          aria-label="Insert a root"
+          title="Editable math notation"
+          aria-label="Editable math notation"
           aria-expanded={showRootControls}
           onMouseDown={(event) => event.preventDefault()}
           onClick={openRootControls}
@@ -616,8 +663,8 @@ export default function RichTextEditor({
         </button>
         <button
           type="button"
-          title="Insert math symbol"
-          aria-label="Insert math symbol"
+          title="Basic math symbols"
+          aria-label="Basic math symbols"
           onMouseDown={(event) => event.preventDefault()}
           onClick={openMathControls}
           aria-expanded={showMathSymbols}
@@ -628,43 +675,50 @@ export default function RichTextEditor({
       </div>
       {showRootControls && (
         <div className="border-b border-slate-200 bg-slate-50 px-3 py-3">
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="relative h-16 w-52" aria-label="Root expression">
-              <input
-                type="text"
-                value={rootIndex}
-                onChange={(event) => setRootIndex(event.target.value)}
-                aria-label="Root index"
-                placeholder="n"
-                className="absolute left-0 top-0 h-8 w-10 rounded-md border-2 border-blue-300 bg-white px-1 text-center text-sm font-semibold text-slate-900 focus:border-blue-500 focus:outline-none"
-              />
-              <span className="absolute bottom-0 left-7 text-5xl leading-none text-slate-700">√</span>
-              <input
-                type="text"
-                value={rootValue}
-                onChange={(event) => setRootValue(event.target.value)}
-                aria-label="Value inside the root"
-                placeholder="value"
-                className="absolute bottom-1 left-[4.25rem] h-10 w-32 rounded-md border-2 border-blue-300 border-t-slate-700 bg-white px-2 text-sm text-slate-900 focus:border-blue-500 focus:outline-none"
-              />
-            </div>
-            <button
+          <p className="mb-2 text-xs font-semibold text-slate-600">Editable math notation</p>
+          <div className="flex flex-wrap gap-1.5">
+            {(["root", "summation", "product", "integral", "limit", "fraction"] as const).map((kind) => <button
+              key={kind}
               type="button"
-              onClick={insertCustomRoot}
-              disabled={!rootIndex.trim()}
-              className="mb-1 h-10 rounded-lg bg-blue-600 px-4 text-xs font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => setStructuredMathKind(kind)}
+              aria-pressed={structuredMathKind === kind}
+              className={`flex h-10 items-center gap-2 rounded-lg border px-3 text-sm font-semibold ${structuredMathKind === kind ? "border-blue-500 bg-blue-600 text-white" : "border-slate-300 bg-white text-slate-800 hover:border-blue-400 hover:bg-blue-50"}`}
             >
-              Insert root
-            </button>
-            <p className="mb-3 text-xs text-slate-500">Enter the index and optionally the value inside the radical.</p>
+              <span className="text-lg" aria-hidden="true">{kind === "root" ? "ⁿ√" : kind === "summation" ? "∑" : kind === "product" ? "∏" : kind === "integral" ? "∫" : kind === "limit" ? "lim" : "a⁄b"}</span>
+              <span className="capitalize">{kind}</span>
+            </button>)}
+          </div>
+          <div className="mt-3 flex flex-wrap items-end gap-2 rounded-xl border border-blue-200 bg-white p-3">
+            {structuredMathKind === "root" && <>
+              <label className="text-xs font-semibold text-slate-600">Root index<input value={rootIndex} onChange={(event) => setRootIndex(event.target.value)} placeholder="n" className="mt-1 block h-9 w-24 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>
+              <label className="min-w-40 flex-1 text-xs font-semibold text-slate-600">Value inside root<input value={rootValue} onChange={(event) => setRootValue(event.target.value)} placeholder="value" className="mt-1 block h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>
+            </>}
+            {(structuredMathKind === "summation" || structuredMathKind === "product" || structuredMathKind === "integral") && <>
+              <label className="text-xs font-semibold text-slate-600">Lower limit<input value={structuredMathValues.lower} onChange={(event) => updateStructuredMathValue("lower", event.target.value)} placeholder={structuredMathKind === "integral" ? "a" : "i = 1"} className="mt-1 block h-9 w-28 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>
+              <label className="text-xs font-semibold text-slate-600">Upper limit<input value={structuredMathValues.upper} onChange={(event) => updateStructuredMathValue("upper", event.target.value)} placeholder={structuredMathKind === "integral" ? "b" : "n"} className="mt-1 block h-9 w-28 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>
+              <label className="min-w-40 flex-1 text-xs font-semibold text-slate-600">{structuredMathKind === "integral" ? "Integrand" : "Expression"}<input value={structuredMathValues.expression} onChange={(event) => updateStructuredMathValue("expression", event.target.value)} placeholder={structuredMathKind === "integral" ? "f(x)" : "aᵢ"} className="mt-1 block h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>
+              {structuredMathKind === "integral" && <label className="text-xs font-semibold text-slate-600">Variable<input value={structuredMathValues.variable} onChange={(event) => updateStructuredMathValue("variable", event.target.value)} placeholder="x" className="mt-1 block h-9 w-20 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>}
+            </>}
+            {structuredMathKind === "limit" && <>
+              <label className="text-xs font-semibold text-slate-600">Variable<input value={structuredMathValues.variable} onChange={(event) => updateStructuredMathValue("variable", event.target.value)} placeholder="x" className="mt-1 block h-9 w-20 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>
+              <label className="text-xs font-semibold text-slate-600">Approaches<input value={structuredMathValues.approach} onChange={(event) => updateStructuredMathValue("approach", event.target.value)} placeholder="0" className="mt-1 block h-9 w-24 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>
+              <label className="min-w-40 flex-1 text-xs font-semibold text-slate-600">Expression<input value={structuredMathValues.expression} onChange={(event) => updateStructuredMathValue("expression", event.target.value)} placeholder="f(x)" className="mt-1 block h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>
+            </>}
+            {structuredMathKind === "fraction" && <>
+              <label className="min-w-40 flex-1 text-xs font-semibold text-slate-600">Numerator<input value={structuredMathValues.numerator} onChange={(event) => updateStructuredMathValue("numerator", event.target.value)} placeholder="a + b" className="mt-1 block h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>
+              <label className="min-w-40 flex-1 text-xs font-semibold text-slate-600">Denominator<input value={structuredMathValues.denominator} onChange={(event) => updateStructuredMathValue("denominator", event.target.value)} placeholder="c" className="mt-1 block h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>
+            </>}
+            <div className="flex h-14 min-w-32 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 px-4 text-xl text-slate-950" aria-label="Math notation preview" dangerouslySetInnerHTML={{ __html: structuredMathKind === "root" ? buildRootMathHtml(rootIndex, rootValue) : buildStructuredMathHtml(structuredMathKind, structuredMathValues) }} />
+            <button type="button" onClick={insertStructuredMath} disabled={structuredMathKind === "root" && !rootIndex.trim()} className="h-9 rounded-lg bg-blue-600 px-4 text-xs font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50">Insert notation</button>
           </div>
         </div>
       )}
       {showMathSymbols && (
         <div className="border-b border-slate-200 bg-slate-50 px-3 py-3">
-          <p className="mb-2 text-xs font-semibold text-slate-600">Insert a math symbol</p>
+          <p className="mb-2 text-xs font-semibold text-slate-600">Basic math symbols</p>
           <div className="flex flex-wrap gap-1.5">
-            {["√", "∛", "π", "θ", "Δ", "∞", "±", "×", "÷", "≠", "≈", "≤", "≥", "∑", "∫", "°", "→", "←", "∈", "∉", "∠", "⊥", "∥", "%"].map((symbol) => (
+            {["√", "∛", "π", "θ", "Δ", "∞", "±", "×", "÷", "≠", "≈", "≤", "≥", "°", "→", "←", "∈", "∉", "∠", "⊥", "∥", "%"].map((symbol) => (
               <button
                 key={symbol}
                 type="button"

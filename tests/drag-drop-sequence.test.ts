@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getCanvasNumberLine, getCanvasShape, getCanvasTextHtml, getCanvasTrackSizes, getLocationBoxSize, gradeDragDrop, getSequenceTargetCount, isDragDropAnswered, normalizeDragDropData, type DragDropData } from "../lib/dragDrop";
+import { getCanvasNumberLine, getCanvasShape, getCanvasTableCellHtml, getCanvasTextHtml, getCanvasTrackSizes, getLocationBoxSize, gradeDragDrop, getSequenceTargetCount, isDragDropAnswered, normalizeDragDropData, type DragDropData } from "../lib/dragDrop";
 
 const sequence: DragDropData = {
   preset: "sequence",
@@ -70,13 +70,20 @@ test("location canvas content survives normalization", () => {
     canvasElements: [
       { id: "image", type: "image", x: 5, y: 6, width: 30, height: 25, imageUrl: "https://example.test/diagram.png" },
       { id: "text", type: "text", x: 10, y: 40, width: 25, height: 12, text: "Label", textHtml: "<div><strong>Lab</strong><em>el</em></div>" },
-      { id: "table", type: "table", x: 40, y: 40, width: 35, height: 25, rows: 2, columns: 2, cells: [["A", "B"], ["C", "D"]] },
+      { id: "table", type: "table", x: 40, y: 40, width: 35, height: 25, rows: 2, columns: 2, cells: [["A", "B"], ["C", "D"]], cellHtml: [["<strong>A</strong>", "B"], ["C", "<u>D</u>"]], cellVerticalAlign: [["top", "middle"], ["middle", "bottom"]] },
     ],
   });
 
   assert.equal(normalized.canvasElements?.length, 3);
   assert.equal(normalized.canvasElements?.[1].textHtml, "<div><strong>Lab</strong><em>el</em></div>");
   assert.equal(normalized.canvasElements?.[2].cells?.[1][1], "D");
+  assert.equal(normalized.canvasElements?.[2].cellHtml?.[1][1], "<u>D</u>");
+  assert.equal(normalized.canvasElements?.[2].cellVerticalAlign?.[1][1], "bottom");
+});
+
+test("table cells render saved formatting and escape legacy plain text", () => {
+  assert.equal(getCanvasTableCellHtml({ cells: [["A < B"]] }, 0, 0), "A &lt; B");
+  assert.equal(getCanvasTableCellHtml({ cells: [["A"]], cellHtml: [["<strong>A</strong>"]] }, 0, 0), "<strong>A</strong>");
 });
 
 test("table track sizes normalize while preserving custom proportions", () => {
@@ -100,6 +107,7 @@ test("number line settings are bounded and discard points outside its range", ()
 });
 
 test("shape settings preserve valid shapes and bound line thickness", () => {
-  assert.deepEqual(getCanvasShape({ shape: { kind: "triangle", thickness: 30 } }), { kind: "triangle", thickness: 12, lineAxis: "horizontal", lineDirection: "descending" });
-  assert.deepEqual(getCanvasShape({ shape: { kind: "circle", thickness: 0 } }), { kind: "circle", thickness: 1, lineAxis: "horizontal", lineDirection: "descending" });
+  assert.deepEqual(getCanvasShape({ shape: { kind: "triangle", thickness: 30 } }), { kind: "triangle", thickness: 12, lineAxis: "horizontal", lineDirection: "descending", arrowDirection: "forward" });
+  assert.deepEqual(getCanvasShape({ shape: { kind: "circle", thickness: 0 } }), { kind: "circle", thickness: 1, lineAxis: "horizontal", lineDirection: "descending", arrowDirection: "forward" });
+  assert.deepEqual(getCanvasShape({ shape: { kind: "arrow", thickness: 4, lineAxis: "vertical", arrowDirection: "reverse" } }), { kind: "arrow", thickness: 4, lineAxis: "vertical", lineDirection: "descending", arrowDirection: "reverse" });
 });

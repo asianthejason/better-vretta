@@ -194,6 +194,13 @@ a:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.rich-text-content math[data-math-expression] {
+  display: inline-block;
+  font-size: 1.15em;
+  margin: 0 0.18em;
+  vertical-align: middle;
+}
+
 .rich-text-content p + p,
 .rich-text-content div + div {
   margin-top: 0.75rem;

@@ -316,22 +316,25 @@ function ChoiceTablePreview({ table }: { table: ChoiceTable }) {
 }
 
 function SequencePreview({ data, itemPreviewUrls = {} }: { data: DragDropData; itemPreviewUrls?: Record<string, string> }) {
+  const targetCount = getSequenceTargetCount(data);
   return (
     <div className="overflow-x-auto pb-2">
-      <div className="inline-grid w-max auto-cols-[minmax(8rem,1fr)] grid-rows-[repeat(2,minmax(0,1fr))] gap-x-3 gap-y-6">
-        {data.items.map((item, index) => (
-          <div key={item.id} style={{ gridColumn: index + 1, gridRow: 1 }} className="box-border flex h-full w-full flex-col items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-center text-sm font-medium text-black shadow-sm">
+      <div className="flex w-max gap-3">
+        {data.items.map((item) => (
+          <div key={item.id} className="box-border flex min-h-16 w-32 shrink-0 flex-col items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-center text-sm font-medium text-black shadow-sm">
             {(itemPreviewUrls[item.id] || item.imageUrl) && <img src={itemPreviewUrls[item.id] || item.imageUrl} alt="" className="mb-2 max-h-24 max-w-32 object-contain" />}
             {item.content || "Untitled item"}
           </div>
         ))}
-        {Array.from({ length: getSequenceTargetCount(data) }, (_, position) => (
-          <div key={position} style={{ gridColumn: position + 1, gridRow: 2 }} className="box-border h-full min-h-14 w-full border-2 border-dashed border-slate-400 bg-white" />
-        ))}
       </div>
-      <div className="mt-4 grid grid-cols-2 gap-8 text-base font-bold text-slate-900">
-        <p className="max-w-xs whitespace-pre-line text-left">{data.sequenceStartLabel}</p>
-        <p className="ml-auto max-w-xs whitespace-pre-line text-right">{data.sequenceEndLabel}</p>
+      <div className="mt-6 inline-block">
+        <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${targetCount}, 8rem)` }}>
+          {Array.from({ length: targetCount }, (_, position) => <div key={position} className="box-border min-h-14 border-2 border-dashed border-slate-400 bg-white" />)}
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-8 text-base font-bold text-slate-900">
+          <p className="max-w-xs whitespace-pre-line text-left">{data.sequenceStartLabel}</p>
+          <p className="ml-auto max-w-xs whitespace-pre-line text-right">{data.sequenceEndLabel}</p>
+        </div>
       </div>
     </div>
   );
@@ -343,18 +346,18 @@ function LocationPreview({ data, itemPreviewUrls = {} }: { data: DragDropData; i
   const boxCanvasStyle = { width: `${boxSize.width / 10}cqw`, height: `${boxSize.height / 10}cqw` };
   return (
     <div style={{ containerType: "inline-size" }} className={`relative overflow-hidden border border-slate-300 bg-slate-100 ${data.backgroundImageUrl ? "" : "aspect-video"}`}>
-      {data.backgroundImageUrl ? <img src={data.backgroundImageUrl} alt="Match locations background" className="block h-auto w-full object-contain" /> : <div className="absolute inset-0 grid place-items-center text-sm text-slate-500">Location canvas</div>}
+      {data.backgroundImageUrl ? <img src={data.backgroundImageUrl} alt="Match locations background" className="block h-auto w-full object-contain" /> : <div className="absolute inset-0" />}
       <div className="absolute inset-0">
         {(data.canvasElements || []).map((element) => <div key={element.id} className="absolute" style={{ left: `${element.x}%`, top: `${element.y}%`, width: `${element.width}%`, height: `${element.height}%` }}><LocationCanvasElementContent element={element} /></div>)}
         <div className={`absolute z-30 flex w-max ${data.choiceBankDirection === "vertical" ? "flex-col" : "flex-row"}`} style={{ left: `${data.choiceBankX ?? 8}%`, top: `${data.choiceBankY ?? 6}%`, gap: "0.8cqw" }}>
-          {previewItems.map((item) => <div key={item.id} style={{ ...boxCanvasStyle, padding: "0.8cqw 1.2cqw", fontSize: "1.4cqw" }} className="box-border flex shrink-0 flex-col items-center justify-center rounded border border-slate-400 bg-white text-center font-medium text-black shadow-sm">
-            {item.imageUrl && <img src={item.imageUrl} alt="" style={{ maxHeight: "8cqw", maxWidth: "11.2cqw", marginBottom: "0.4cqw" }} className="min-h-0 flex-1 object-contain" />}
+          {previewItems.map((item) => <div key={item.id} style={{ ...boxCanvasStyle, padding: "1cqw 1.4cqw", fontSize: "1.7cqw" }} className="box-border flex shrink-0 flex-col items-center justify-center rounded border border-slate-400 bg-white text-center font-medium text-black shadow-sm">
+            {item.imageUrl && <img src={item.imageUrl} alt="" style={{ maxHeight: "10cqw", maxWidth: "14cqw", marginBottom: "0.5cqw" }} className="min-h-0 flex-1 object-contain" />}
             <span>{item.content || "Untitled choice"}</span>
           </div>)}
         </div>
         {data.zones.map((zone, index) => (
-          <div key={zone.id} className={`absolute z-20 box-border flex items-center justify-center bg-white/75 text-center font-semibold text-slate-800 ${data.settings.showZoneOutlines ? "border-2 border-dashed border-slate-500" : "border border-transparent"}`} style={{ left: `${zone.x ?? 10}%`, top: `${zone.y ?? 10}%`, ...boxCanvasStyle, fontSize: "1.2cqw" }}>
-            {data.settings.showTargetLabels ? <span style={{ marginBottom: "0.4cqw", fontSize: "1.4cqw" }} className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 whitespace-nowrap font-bold text-slate-900">{zone.label || `Target ${index + 1}`}</span> : null}
+          <div key={zone.id} className={`absolute z-20 box-border flex items-center justify-center bg-white/75 text-center font-semibold text-slate-800 ${data.settings.showZoneOutlines ? "border-2 border-dashed border-slate-500" : "border border-transparent"}`} style={{ left: `${zone.x ?? 10}%`, top: `${zone.y ?? 10}%`, ...boxCanvasStyle, fontSize: "1.5cqw" }}>
+            {data.settings.showTargetLabels ? <span style={{ marginBottom: "0.5cqw", fontSize: "1.6cqw" }} className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 whitespace-nowrap font-bold text-slate-900">{zone.label || `Target ${index + 1}`}</span> : null}
           </div>
         ))}
       </div>
@@ -533,6 +536,7 @@ export default function AssessmentEditorPage({
   const [questionType, setQuestionType] =
     useState<QuestionType>("multiple-choice");
   const [questionBuilderStep, setQuestionBuilderStep] = useState(1);
+  const [questionSetupCollapsed, setQuestionSetupCollapsed] = useState(false);
   const [dragDropData, setDragDropData] = useState<DragDropData>(() => createDefaultDragDropData());
   const [selectedDragDropItemFiles, setSelectedDragDropItemFiles] = useState<Record<string, File>>({});
   const [dragDropItemPreviewUrls, setDragDropItemPreviewUrls] = useState<Record<string, string>>({});
@@ -909,6 +913,7 @@ export default function AssessmentEditorPage({
   function resetQuestionForm() {
     setQuestionType("multiple-choice");
     setQuestionBuilderStep(1);
+    setQuestionSetupCollapsed(false);
     setDragDropData(createDefaultDragDropData());
     selectedDragDropItemFilesRef.current = {};
     setSelectedDragDropItemFiles({});
@@ -3011,6 +3016,13 @@ export default function AssessmentEditorPage({
           )}
 
           <div className="mt-6 space-y-4">
+            <div
+              className={`grid transition-[grid-template-rows,opacity] duration-300 ease-in-out motion-reduce:transition-none ${questionSetupCollapsed && questionBuilderStep === 4 ? "grid-rows-[0fr] opacity-0" : "grid-rows-[1fr] opacity-100"}`}
+              aria-hidden={questionSetupCollapsed && questionBuilderStep === 4}
+              inert={questionSetupCollapsed && questionBuilderStep === 4 ? true : undefined}
+            >
+              <div className="min-h-0 overflow-hidden">
+                <div className="space-y-4">
             {questionBuilderStep >= 1 && <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
               <p className="text-xs font-bold uppercase tracking-[0.16em] text-blue-600">Step 1 · Question type</p>
               <h3 className="mt-2 text-lg font-semibold text-slate-950">What kind of question are you making?</h3>
@@ -3062,10 +3074,28 @@ export default function AssessmentEditorPage({
               <div className="mb-4"><p className="text-xs font-bold uppercase tracking-[0.16em] text-blue-600">Step 3 · Drag-and-drop layout</p><h3 className="mt-2 text-lg font-semibold text-slate-950">Choose how students will place their answers</h3></div>
               <DragDropPresetPicker value={dragDropData} onChange={(nextData) => { setDragDropData(nextData); setQuestionBuilderStep(4); }} />
             </div>}
+                </div>
+              </div>
+            </div>
+
+            {questionBuilderStep === 4 && <div className="flex items-center gap-3 py-1">
+              <span className="h-px flex-1 bg-slate-300" />
+              <button
+                type="button"
+                onClick={() => setQuestionSetupCollapsed((current) => !current)}
+                aria-expanded={!questionSetupCollapsed}
+                aria-label={questionSetupCollapsed ? "Expand question setup" : "Collapse question setup"}
+                title={questionSetupCollapsed ? "Expand question setup" : "Collapse question setup"}
+                className="grid h-9 w-9 place-items-center rounded-full border border-blue-300 bg-white text-blue-700 shadow-sm transition-colors hover:border-blue-500 hover:bg-blue-50"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={`h-5 w-5 transition-transform duration-300 ease-in-out motion-reduce:transition-none ${questionSetupCollapsed ? "rotate-180" : "rotate-0"}`} aria-hidden="true">
+                  <path d="m6 15 6-6 6 6" />
+                </svg>
+              </button>
+              <span className="h-px flex-1 bg-slate-300" />
+            </div>}
 
             {questionBuilderStep === 4 && <>
-            <hr className="border-slate-700" />
-
             {questionLayout === "split" && (
               <div className="grid grid-cols-2 rounded-xl border border-slate-700 bg-slate-950 p-1" role="tablist" aria-label="Split question editor">
                 <button

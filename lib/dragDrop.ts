@@ -38,9 +38,17 @@ export type DragDropCanvasElement = {
   rows?: number;
   columns?: number;
   cells?: string[][];
+  cellHtml?: string[][];
+  cellVerticalAlign?: Array<Array<"top" | "middle" | "bottom">>;
   showBorders?: boolean;
   columnWidths?: number[];
   rowHeights?: number[];
+  mergedCells?: Array<{
+    row: number;
+    column: number;
+    rowSpan: number;
+    columnSpan: number;
+  }>;
   numberLine?: {
     min: number;
     max: number;
@@ -50,10 +58,11 @@ export type DragDropCanvasElement = {
     points: number[];
   };
   shape?: {
-    kind: "line" | "circle" | "rectangle" | "triangle";
+    kind: "line" | "arrow" | "circle" | "rectangle" | "triangle";
     thickness: number;
     lineAxis?: "horizontal" | "vertical" | "diagonal";
     lineDirection?: "ascending" | "descending";
+    arrowDirection?: "forward" | "reverse";
   };
 };
 
@@ -86,7 +95,7 @@ export type DragDropPlacements = Record<string, string[]>;
 export type DragDropBoxSize = { width: number; height: number };
 
 export function getCanvasShape(element: Pick<DragDropCanvasElement, "shape">) {
-  const kind = ["line", "circle", "rectangle", "triangle"].includes(element.shape?.kind || "")
+  const kind = ["line", "arrow", "circle", "rectangle", "triangle"].includes(element.shape?.kind || "")
     ? element.shape!.kind
     : "line";
   const requestedThickness = Number(element.shape?.thickness);
@@ -96,7 +105,13 @@ export function getCanvasShape(element: Pick<DragDropCanvasElement, "shape">) {
   const lineAxis = ["horizontal", "vertical", "diagonal"].includes(element.shape?.lineAxis || "")
     ? element.shape!.lineAxis!
     : "horizontal" as const;
-  return { kind, thickness, lineAxis, lineDirection: element.shape?.lineDirection === "ascending" ? "ascending" as const : "descending" as const };
+  return {
+    kind,
+    thickness,
+    lineAxis,
+    lineDirection: element.shape?.lineDirection === "ascending" ? "ascending" as const : "descending" as const,
+    arrowDirection: element.shape?.arrowDirection === "reverse" ? "reverse" as const : "forward" as const,
+  };
 }
 
 export function getCanvasNumberLine(element: Pick<DragDropCanvasElement, "numberLine">) {
@@ -128,6 +143,18 @@ export function getCanvasTextHtml(element: Pick<DragDropCanvasElement, "text" | 
     : html;
 }
 
+export function getCanvasTableCellHtml(element: Pick<DragDropCanvasElement, "cells" | "cellHtml">, row: number, column: number) {
+  const savedHtml = element.cellHtml?.[row]?.[column];
+  if (savedHtml) return savedHtml;
+  return (element.cells?.[row]?.[column] || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;")
+    .replaceAll("\n", "<br>");
+}
+
 export function getCanvasTrackSizes(count: number, saved?: number[]) {
   const safeCount = Math.max(1, Math.trunc(count) || 1);
   if (!saved || saved.length !== safeCount || saved.some((size) => !Number.isFinite(size) || size <= 0)) {
@@ -138,14 +165,14 @@ export function getCanvasTrackSizes(count: number, saved?: number[]) {
 }
 
 export function getLocationBoxSize(items: DragDropItem[]): DragDropBoxSize {
-  const widths = items.map((item) => Math.max(0, item.content.trim().length * 8.5));
-  const width = Math.round(Math.max(96, items.some((item) => item.imageUrl) ? 144 : 0, Math.min(240, Math.max(0, ...widths) + 32)));
-  const contentWidth = Math.max(64, width - 24);
+  const widths = items.map((item) => Math.max(0, item.content.trim().length * 9.5));
+  const width = Math.round(Math.max(120, items.some((item) => item.imageUrl) ? 176 : 0, Math.min(300, Math.max(0, ...widths) + 40)));
+  const contentWidth = Math.max(80, width - 32);
   const heights = items.map((item) => {
-    const textLines = Math.max(1, Math.ceil((item.content.trim().length * 8.5) / contentWidth));
-    return 20 + textLines * 20 + (item.imageUrl ? 88 : 0);
+    const textLines = Math.max(1, Math.ceil((item.content.trim().length * 9.5) / contentWidth));
+    return 24 + textLines * 22 + (item.imageUrl ? 108 : 0);
   });
-  return { width, height: Math.round(Math.max(52, Math.min(176, Math.max(0, ...heights)))) };
+  return { width, height: Math.round(Math.max(64, Math.min(220, Math.max(0, ...heights)))) };
 }
 
 export const makeDragDropId = () =>
