@@ -134,3 +134,18 @@ test("stored expression trees round trip and reject invalid payloads", () => {
 test("math text is escaped before it reaches MathML", () => {
   assert.equal(renderMathExpressionMathMl(text("a < b & c")), "<mtext>a &lt; b &amp; c</mtext>");
 });
+
+test("mixed fractions retain an editable whole part when saved and reopened", () => {
+  const tree: MathExpressionNode = { type: "fraction", id: "mixed", whole: createMathSlot("whole number"), numerator: text("1"), denominator: text("2") };
+  assert.equal(mathExpressionHasEmptySlots(tree), true);
+  const complete = replaceMathNode(tree, tree.whole!.id, { type: "text", id: tree.whole!.id, value: "3" });
+  assert.equal(mathExpressionHasEmptySlots(complete), false);
+  assert.deepEqual(decodeMathExpressionTree(encodeMathExpressionTree(complete)), complete);
+  assert.equal(findMathNode(complete, tree.whole!.id)?.type, "text");
+  assert.equal(renderMathExpressionMathMl(complete), '<mrow><mtext>3</mtext><mspace width="0.15em"/><mfrac><mtext>1</mtext><mtext>2</mtext></mfrac></mrow>');
+  assert.equal(mathExpressionHasEmptySlots(removeMathNode(complete, tree.whole!.id).root), true);
+});
+
+test("invalid mixed fraction whole parts are rejected", () => {
+  assert.equal(decodeMathExpressionTree(encodeURIComponent(JSON.stringify({ type: "fraction", id: "bad", whole: { type: "unknown" }, numerator: text("1"), denominator: text("2") }))), null);
+});

@@ -37,7 +37,7 @@ function NodeView({ node, selectedId, onSelect }: { node: MathExpressionNode; se
     case "slot": return shell(<span className="rounded border border-dashed border-blue-400 bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700">{node.label || "Add"}</span>);
     case "text": return shell(<span className="whitespace-pre-wrap font-serif text-xl">{node.value || "□"}</span>);
     case "sequence": return shell(<span className="inline-flex items-center gap-0.5">{node.children.map((item) => <NodeView key={item.id} node={item} selectedId={selectedId} onSelect={onSelect} />)}</span>);
-    case "fraction": return shell(<span className="inline-flex min-w-12 flex-col items-stretch text-center"><span className="border-b border-slate-950 px-1">{child(node.numerator)}</span><span className="px-1">{child(node.denominator)}</span></span>);
+    case "fraction": return shell(<>{node.whole && child(node.whole)}<span className="inline-flex min-w-12 flex-col items-stretch text-center"><span className="border-b border-slate-950 px-1">{child(node.numerator)}</span><span className="px-1">{child(node.denominator)}</span></span></>);
     case "root": {
       const squareRoot = node.index.type === "text" && ["", "2"].includes(node.index.value.trim());
       return shell(<span className="relative inline-flex min-h-12 items-stretch pl-1">
@@ -140,6 +140,7 @@ export default function MathExpressionComposer({ value, onChange, onCommit, onCa
     setSelectedId(symbolNode.id);
   };
   const parent = findMathParent(value, selected.id);
+  const selectedFraction = selected.type === "fraction" ? selected : parent?.type === "fraction" ? parent : null;
   const selectedRoot = selected.type === "root" ? selected : parent?.type === "root" ? parent : null;
   const selectedCanBeRemoved = canRemoveMathNode(value, selected.id);
   const textValue = selected.type === "text" ? selected.value : "";
@@ -148,7 +149,7 @@ export default function MathExpressionComposer({ value, onChange, onCommit, onCa
     if (node.type === "slot") return node.label || "Empty slot";
     if (node.type === "text") return node.value || "Text";
     if (node.type === "sequence") return "Expression";
-    if (node.type === "fraction") return "Fraction";
+    if (node.type === "fraction") return node.whole ? "Mixed fraction" : "Fraction";
     if (node.type === "root") return node.index.type === "text" && ["", "2"].includes(node.index.value.trim()) ? "Square root" : "Root";
     if (node.type === "brackets") return "Bracketed expression";
     if (node.type === "superscript") return "Exponent";
@@ -175,6 +176,18 @@ export default function MathExpressionComposer({ value, onChange, onCommit, onCa
       <label className="min-w-48 flex-1 text-xs font-semibold text-slate-600">Selected content: {nodeLabel(selected)}
         <input ref={textInputRef} value={textValue} disabled={selected.type !== "slot" && selected.type !== "text"} placeholder={selected.type === "slot" ? selected.label || "Enter text" : "Select a text value or empty slot"} onChange={(event) => { replaceSelected({ type: "text", id: selected.id, value: event.target.value }); }} className="mt-1 block h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950 disabled:bg-slate-100" />
       </label>
+      {selectedFraction && <label className="flex h-9 items-center gap-2 text-xs font-semibold text-slate-700"><input type="checkbox" checked={Boolean(selectedFraction.whole)} onChange={(event) => {
+        if (event.target.checked) {
+          const whole = createMathSlot("whole number");
+          onChange(replaceMathNode(value, selectedFraction.id, { ...selectedFraction, whole }));
+          setSelectedId(whole.id);
+        } else {
+          const fraction = { ...selectedFraction };
+          delete fraction.whole;
+          onChange(replaceMathNode(value, selectedFraction.id, fraction));
+          setSelectedId(fraction.id);
+        }
+      }} />Mixed fraction</label>}
       {selectedRoot && <label className="text-xs font-semibold text-slate-600">Root index<input value={selectedRoot.index.type === "text" ? selectedRoot.index.value : ""} placeholder="2" inputMode="numeric" onFocus={(event) => event.currentTarget.select()} onChange={(event) => onChange(replaceMathNode(value, selectedRoot.id, { ...selectedRoot, index: createMathText(event.target.value) }))} onBlur={(event) => { if (!event.currentTarget.value) onChange(replaceMathNode(value, selectedRoot.id, { ...selectedRoot, index: createMathText("2") })); }} className="mt-1 block h-9 w-20 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>}
       {selected.type === "brackets" && <label className="text-xs font-semibold text-slate-600">Bracket style<select value={selected.style} onChange={(event) => replaceSelected({ ...selected, style: event.target.value as MathBracketStyle })} className="mt-1 block h-9 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950"><option value="parentheses">( )</option><option value="brackets">[ ]</option><option value="braces">{'{ }'}</option></select></label>}
       <button type="button" className={button} onClick={() => addSibling("before")}>+ Before</button>

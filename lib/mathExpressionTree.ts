@@ -4,7 +4,7 @@ export type MathExpressionNode =
   | { type: "slot"; id: string; label?: string }
   | { type: "text"; id: string; value: string }
   | { type: "sequence"; id: string; children: MathExpressionNode[] }
-  | { type: "fraction"; id: string; numerator: MathExpressionNode; denominator: MathExpressionNode }
+  | { type: "fraction"; id: string; whole?: MathExpressionNode; numerator: MathExpressionNode; denominator: MathExpressionNode }
   | { type: "root"; id: string; index: MathExpressionNode; radicand: MathExpressionNode }
   | { type: "brackets"; id: string; style: MathBracketStyle; body: MathExpressionNode }
   | { type: "superscript"; id: string; base: MathExpressionNode; exponent: MathExpressionNode }
@@ -22,7 +22,7 @@ export const createEmptyMathExpression = () => createMathSlot();
 const childNodes = (node: MathExpressionNode): MathExpressionNode[] => {
   switch (node.type) {
     case "sequence": return node.children;
-    case "fraction": return [node.numerator, node.denominator];
+    case "fraction": return [...(node.whole ? [node.whole] : []), node.numerator, node.denominator];
     case "root": return [node.index, node.radicand];
     case "brackets": return [node.body];
     case "superscript": return [node.base, node.exponent];
@@ -57,7 +57,7 @@ export function replaceMathNode(root: MathExpressionNode, id: string, replacemen
   const replace = (node: MathExpressionNode) => replaceMathNode(node, id, replacement);
   switch (root.type) {
     case "sequence": return { ...root, children: root.children.map(replace) };
-    case "fraction": return { ...root, numerator: replace(root.numerator), denominator: replace(root.denominator) };
+    case "fraction": return { ...root, ...(root.whole ? { whole: replace(root.whole) } : {}), numerator: replace(root.numerator), denominator: replace(root.denominator) };
     case "root": return { ...root, index: replace(root.index), radicand: replace(root.radicand) };
     case "brackets": return { ...root, body: replace(root.body) };
     case "superscript": return { ...root, base: replace(root.base), exponent: replace(root.exponent) };
@@ -124,7 +124,10 @@ export function renderMathExpressionMathMl(node: MathExpressionNode): string {
     case "slot": return "<mtext>□</mtext>";
     case "text": return mtext(node.value);
     case "sequence": return `<mrow>${node.children.map(render).join("")}</mrow>`;
-    case "fraction": return `<mfrac>${render(node.numerator)}${render(node.denominator)}</mfrac>`;
+    case "fraction": {
+      const fraction = `<mfrac>${render(node.numerator)}${render(node.denominator)}</mfrac>`;
+      return node.whole ? `<mrow>${render(node.whole)}<mspace width="0.15em"/>${fraction}</mrow>` : fraction;
+    }
     case "root": {
       const indexText = node.index.type === "text" ? node.index.value.trim() : "";
       return indexText === "" || indexText === "2"
@@ -155,7 +158,7 @@ function validateMathNode(value: unknown, depth = 0, count = { value: 0 }): valu
   if (node.type === "slot") return node.label === undefined || (typeof node.label === "string" && node.label.length <= 80);
   if (node.type === "text") return typeof node.value === "string" && node.value.length <= 1000;
   if (node.type === "sequence") return Array.isArray(node.children) && node.children.length <= 50 && node.children.every((child) => validateMathNode(child, depth + 1, count));
-  if (node.type === "fraction") return validateMathNode(node.numerator, depth + 1, count) && validateMathNode(node.denominator, depth + 1, count);
+  if (node.type === "fraction") return (node.whole === undefined || validateMathNode(node.whole, depth + 1, count)) && validateMathNode(node.numerator, depth + 1, count) && validateMathNode(node.denominator, depth + 1, count);
   if (node.type === "root") return validateMathNode(node.index, depth + 1, count) && validateMathNode(node.radicand, depth + 1, count);
   if (node.type === "brackets") return ["parentheses", "brackets", "braces"].includes(String(node.style)) && validateMathNode(node.body, depth + 1, count);
   if (node.type === "superscript") return validateMathNode(node.base, depth + 1, count) && validateMathNode(node.exponent, depth + 1, count);
