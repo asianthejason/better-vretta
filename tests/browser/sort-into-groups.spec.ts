@@ -1,0 +1,36 @@
+import { expect, test } from '@playwright/test';
+import { build } from 'esbuild';
+
+test('canvas categories hold multiple choices, move them, remove them, and restore responses', async ({ page }) => {
+  const result = await build({ stdin: { contents: `import React,{useState} from 'react';import{createRoot}from'react-dom/client';import Question from './app/student/[id]/DragDropQuestion';import Editor from './app/teacher/assessments/[id]/LocationCanvasEditor';import{createCategoryCanvasData}from'./lib/dragDrop';
+  const initial=createCategoryCanvasData();initial.items=[{id:'w',content:'Statement W'},{id:'x',content:'Statement X'},{id:'y',content:'Statement Y'}];initial.zones=initial.zones.map((z,i)=>({...z,id:'z'+i,label:i?'Between':'Within',correctItemIds:i?['y']:['w','x']}));
+  function App(){const[data,setData]=useState(initial);const[placements,setPlacements]=useState({});const[edit,setEdit]=useState(false);const[key,setKey]=useState(0);return <><button onClick={()=>setEdit(!edit)}>Toggle builder</button><button onClick={()=>setKey(key+1)}>Restore response</button>{edit?<Editor data={data} onChange={setData} uploadedImages={[]} itemPreviewUrls={{}} onItemImageFileChange={()=>{}} onChooseItemImage={()=>{}} onRemoveItemImage={()=>{}} onUploadBackground={()=>{}} onDeleteUploadedImage={()=>{}}/>:<Question key={key} data={data} placements={placements} onChange={setPlacements}/>}<output>{JSON.stringify(placements)}</output><pre>{JSON.stringify(data.zones)}</pre></>};createRoot(document.getElementById('root')).render(<App/>);`, resolveDir: process.cwd(), loader:'tsx' }, bundle:true, write:false, platform:'browser',format:'esm',outfile:'/tmp/sort-browser.js' });
+  await page.setContent('<div id="root"></div>');
+  await page.addScriptTag({ type:'module', content:result.outputFiles.find(f=>f.path.endsWith('.js'))!.text });
+  await page.getByRole('button',{name:'Statement W',exact:true}).click();
+  await page.getByRole('button',{name:'Place selected choice in Within'}).click();
+  await page.getByRole('button',{name:'Statement X',exact:true}).click();
+  await page.getByRole('button',{name:'Place selected choice in Within'}).click();
+  await expect(page.locator('output')).toHaveText('{"z0":["w","x"]}');
+  await page.getByRole('button',{name:'Restore response'}).click();
+  await expect(page.getByRole('button',{name:'Return Statement W to choices'})).toBeVisible();
+  await page.getByRole('button',{name:'Statement W',exact:true}).click();
+  await page.getByRole('button',{name:'Place selected choice in Between'}).click();
+  await expect(page.locator('output')).toHaveText('{"z0":["x"],"z1":["w"]}');
+  await page.getByRole('button',{name:'Return Statement W to choices'}).click();
+  await expect(page.locator('output')).toHaveText('{"z0":["x"],"z1":[]}');
+  const transfer = await page.evaluateHandle(() => new DataTransfer());
+  await transfer.evaluate(value => value.setData('text/plain', 'y'));
+  await page.getByRole('button', { name: 'Place selected choice in Between' }).locator('..').dispatchEvent('drop', { dataTransfer: transfer });
+  await expect(page.locator('output')).toHaveText('{"z0":["x"],"z1":["y"]}');
+  await page.getByRole('button',{name:'Toggle builder'}).click();
+  await page.locator('[data-nudge-id="z0"]').click();
+  await expect(page.getByRole('checkbox',{name:'Statement W'})).toBeChecked();
+  await expect(page.getByRole('checkbox',{name:'Statement X'})).toBeChecked();
+  await page.getByRole('checkbox',{name:'Statement Y'}).check();
+  await page.getByLabel('Category width').fill('35');
+  const zones=JSON.parse(await page.locator('pre').innerText());
+  expect(zones[0].correctItemIds).toEqual(['w','x','y']);
+  expect(zones[1].correctItemIds).toEqual([]);
+  expect(zones[0].width).toBe(35);
+});

@@ -1,7 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { buildRootMathHtml, buildStructuredMathHtml, type StructuredMathKind, type StructuredMathValues } from "@/lib/mathExpressions";
+import { normalizeFractionParentheses } from "@/lib/mathExpressions";
+import { buildMathExpressionHtml, createEmptyMathExpression, readMathExpressionTree, type MathExpressionNode } from "@/lib/mathExpressionTree";
+import MathExpressionComposer from "./MathExpressionComposer";
+import ChoiceNumberLineBuilder from "./ChoiceNumberLineBuilder";
+import { buildChoiceNumberLineHtml, DEFAULT_CHOICE_NUMBER_LINE, parseChoiceNumberLine, type ChoiceNumberLine } from "@/lib/choiceNumberLine";
+import TextScriptIcon from "./TextScriptIcon";
+import { ACTIVE_TEXT_TOOLBAR_BUTTON } from "./textEditorToolbarStyles";
+import { exitTextBoxAtCaret, insertLineInTextBox, removeTextBoxAtCaret, activateInlineScript, normalizeFractionBracketsAtCaret, placeCaretAfterMath, toggleTextBoxAtCaret } from "./richTextEditing";
 
 const FONT_SIZE_STEPS = [10, 13, 16, 18, 24, 32, 48];
 
@@ -10,45 +17,61 @@ type RichTextEditorProps = {
   onChange: (value: string) => void;
   placeholder: string;
   minHeight?: string;
+  allowNumberLines?: boolean;
+  verticalAlign?: "top" | "middle" | "bottom";
+  onVerticalAlignChange?: (alignment: "top" | "middle" | "bottom") => void;
 };
 
 type ActiveFormats = {
   bold: boolean;
   italic: boolean;
+  underline: boolean;
   superscript: boolean;
   subscript: boolean;
   textBox: boolean;
   fontSize: string;
+  alignment: "left" | "center" | "right";
 };
-
-type EditableMathKind = StructuredMathKind | "root";
 
 export default function RichTextEditor({
   value,
   onChange,
   placeholder,
   minHeight = "9rem",
+  allowNumberLines = false,
+  verticalAlign,
+  onVerticalAlignChange,
 }: RichTextEditorProps) {
   const editorRef = useRef<HTMLDivElement | null>(null);
   const savedRangeRef = useRef<Range | null>(null);
+  const editingMathRef = useRef<Element | null>(null);
+  const [editingExistingMath, setEditingExistingMath] = useState(false);
   const [showTableControls, setShowTableControls] = useState(false);
-  const [showMathSymbols, setShowMathSymbols] = useState(false);
-  const [structuredMathKind, setStructuredMathKind] = useState<EditableMathKind>("summation");
-  const [structuredMathValues, setStructuredMathValues] = useState<StructuredMathValues>({ lower: "i = 1", upper: "n", expression: "", variable: "x", approach: "0", numerator: "", denominator: "" });
+  const [numberLineDraft, setNumberLineDraft] = useState<ChoiceNumberLine | null>(null);
+  const editingNumberLineRef = useRef<Element | null>(null);
+  const [numberLineRevision, setNumberLineRevision] = useState(0);
+  const [mathTree, setMathTree] = useState<MathExpressionNode>(() => createEmptyMathExpression());
   const [showRootControls, setShowRootControls] = useState(false);
-  const [rootIndex, setRootIndex] = useState("3");
-  const [rootValue, setRootValue] = useState("");
   const [activeFormats, setActiveFormats] = useState<ActiveFormats>({
     bold: false,
     italic: false,
+    underline: false,
     superscript: false,
     subscript: false,
     textBox: false,
     fontSize: "3",
+    alignment: "left",
   });
   const [tableRows, setTableRows] = useState(3);
   const [tableColumns, setTableColumns] = useState(3);
   const [tableHasBorder, setTableHasBorder] = useState(true);
+  const [localVerticalAlign, setLocalVerticalAlign] = useState<"top" | "middle" | "bottom">("top");
+  const currentVerticalAlign = verticalAlign || localVerticalAlign;
+
+  function changeVerticalAlign(alignment: "top" | "middle" | "bottom") {
+    if (onVerticalAlignChange) onVerticalAlignChange(alignment);
+    else setLocalVerticalAlign(alignment);
+  }
 
   useEffect(() => {
     if (
@@ -94,12 +117,14 @@ export default function RichTextEditor({
     setActiveFormats({
       bold: Boolean(nearestBold) || document.queryCommandState("bold"),
       italic: Boolean(nearestItalic) || document.queryCommandState("italic"),
+      underline: document.queryCommandState("underline"),
       superscript:
         Boolean(nearestSuperscript) || document.queryCommandState("superscript"),
       subscript:
         Boolean(nearestSubscript) || document.queryCommandState("subscript"),
       textBox: Boolean(nearestTextBox),
       fontSize,
+      alignment: document.queryCommandState("justifyCenter") ? "center" : document.queryCommandState("justifyRight") ? "right" : "left",
     });
   }
 
@@ -108,13 +133,25 @@ export default function RichTextEditor({
 
     const copy = editorRef.current.cloneNode(true) as HTMLDivElement;
     const allowedTags = new Set([
-      "DIV", "P", "BR", "B", "STRONG", "I", "EM", "FONT", "SUB", "SUP",
+      "DIV", "P", "BR", "B", "STRONG", "I", "EM", "U", "FONT", "SUB", "SUP",
       "TABLE", "TBODY", "THEAD", "TR", "TH", "TD",
       "MATH", "MSTYLE", "MROW", "MO", "MI", "MN", "MTEXT", "MUNDER",
-      "MOVER", "MUNDEROVER", "MSUB", "MSUP", "MSUBSUP", "MFRAC", "MSQRT", "MROOT",
+      "MOVER", "MUNDEROVER", "MSUB", "MSUP", "MSUBSUP", "MFRAC", "MSQRT", "MROOT", "MPADDED", "MENCLOSE",
     ]);
 
     Array.from(copy.querySelectorAll("*")).forEach((element) => {
+      if (!copy.contains(element)) return;
+      if (element.hasAttribute("data-choice-number-line")) {
+        const config = parseChoiceNumberLine(element.getAttribute("data-choice-number-line") || "");
+        if (config) {
+          const template = document.createElement("template");
+          template.innerHTML = buildChoiceNumberLineHtml(config);
+          element.replaceWith(template.content);
+          return;
+        }
+        element.remove();
+        return;
+      }
       if (!allowedTags.has(element.tagName.toUpperCase())) {
         element.replaceWith(...Array.from(element.childNodes));
         return;
@@ -127,19 +164,33 @@ export default function RichTextEditor({
           element.tagName === "TABLE" && attribute.name === "data-border";
         const keepTextBox =
           element.tagName === "DIV" && attribute.name === "data-text-box";
+        const keepTextAlignment =
+          attribute.name === "style" && /^(?:text-align:\s*(?:left|center|right);?\s*)$/i.test(attribute.value);
         const keepMathType =
           element.tagName.toUpperCase() === "MATH" && attribute.name === "data-math-expression";
+        const keepMathTree =
+          element.tagName.toUpperCase() === "MATH" && attribute.name === "data-math-tree" && attribute.value.length <= 30000;
         const keepMathEditing =
           element.tagName.toUpperCase() === "MATH" && attribute.name === "contenteditable" && attribute.value === "false";
         const keepDisplayStyle =
           element.tagName.toUpperCase() === "MSTYLE" && attribute.name === "displaystyle" && attribute.value === "true";
-        if (!keepFontSize && !keepTableBorder && !keepTextBox && !keepMathType && !keepMathEditing && !keepDisplayStyle) {
+        const keepMathPadding =
+          element.tagName.toUpperCase() === "MPADDED" &&
+          ((attribute.name === "height" && attribute.value === "+0.24em") ||
+            (attribute.name === "voffset" && ["0.18em", "-0.22em"].includes(attribute.value)));
+        const keepMathStretchy =
+          element.tagName.toUpperCase() === "MO" &&
+          ((["stretchy", "fence", "symmetric"].includes(attribute.name) && attribute.value === "true") ||
+            (attribute.name === "minsize" && attribute.value === "2em"));
+        const keepMathEnclosure = element.tagName.toUpperCase() === "MENCLOSE" && attribute.name === "notation" && attribute.value === "top";
+        const keepRadicalOverline = element.tagName.toUpperCase() === "MROW" && attribute.name === "data-radical-overline" && attribute.value === "true";
+        if (!keepFontSize && !keepTableBorder && !keepTextBox && !keepTextAlignment && !keepMathType && !keepMathTree && !keepMathEditing && !keepDisplayStyle && !keepMathPadding && !keepMathStretchy && !keepMathEnclosure && !keepRadicalOverline) {
           element.removeAttribute(attribute.name);
         }
       });
     });
 
-    return copy.innerHTML;
+    return normalizeFractionParentheses(copy.innerHTML.replaceAll("\u200B", ""));
   }
 
   function emitChange() {
@@ -176,258 +227,107 @@ export default function RichTextEditor({
 
   function toggleTextBox() {
     const editor = editorRef.current;
-    const selection = window.getSelection();
-    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
-    if (!editor || !selection || !range || !editor.contains(range.commonAncestorContainer)) {
-      return;
-    }
-
-    const startElement =
-      range.startContainer instanceof HTMLElement
-        ? range.startContainer
-        : range.startContainer.parentElement;
-    const existingBox = startElement?.closest('[data-text-box="true"]');
-
-    if (existingBox && existingBox !== editor) {
-      return;
-    } else {
-      editor.focus();
-      document.execCommand("formatBlock", false, "div");
-      const updatedSelection = window.getSelection();
-      const updatedRange = updatedSelection?.rangeCount
-        ? updatedSelection.getRangeAt(0)
-        : null;
-      const updatedElement =
-        updatedRange?.startContainer instanceof HTMLElement
-          ? updatedRange.startContainer
-          : updatedRange?.startContainer.parentElement;
-      const row = updatedElement?.closest("div");
-
-      if (row && row !== editor) {
-        row.setAttribute("data-text-box", "true");
-      } else {
-        const box = document.createElement("div");
-        box.setAttribute("data-text-box", "true");
-        const contents = range.extractContents();
-        if (contents.hasChildNodes()) {
-          box.appendChild(contents);
-        } else {
-          box.appendChild(document.createElement("br"));
-        }
-        range.insertNode(box);
-        const boxRange = document.createRange();
-        boxRange.selectNodeContents(box);
-        boxRange.collapse(false);
-        selection.removeAllRanges();
-        selection.addRange(boxRange);
-      }
-    }
-
-    emitChange();
-    updateActiveFormats();
+    if (editor && toggleTextBoxAtCaret(editor)) { emitChange(); updateActiveFormats(); }
   }
 
   function removeCurrentTextBox() {
     const editor = editorRef.current;
-    const selection = window.getSelection();
-    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
-    if (!editor || !range || !editor.contains(range.commonAncestorContainer)) return;
-    const startElement = range.startContainer instanceof HTMLElement
-      ? range.startContainer
-      : range.startContainer.parentElement;
-    const box = startElement?.closest('[data-text-box="true"]');
-    if (!box || box === editor) return;
-    box.removeAttribute("data-text-box");
-    emitChange();
-    updateActiveFormats();
+    if (editor && removeTextBoxAtCaret(editor)) { emitChange(); updateActiveFormats(); }
   }
 
   function exitCurrentTextBox() {
     const editor = editorRef.current;
-    const selection = window.getSelection();
-    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
-    if (!editor || !selection || !range || !editor.contains(range.commonAncestorContainer)) return;
-    const startElement = range.startContainer instanceof HTMLElement
-      ? range.startContainer
-      : range.startContainer.parentElement;
-    const box = startElement?.closest('[data-text-box="true"]');
-    if (!box || box === editor) return;
+    if (editor && exitTextBoxAtCaret(editor)) { emitChange(); updateActiveFormats(); }
+  }
 
-    let nextRow = box.nextElementSibling as HTMLElement | null;
-    if (!nextRow?.matches('div:not([data-text-box="true"]), p')) {
-      nextRow = document.createElement("div");
-      nextRow.appendChild(document.createElement("br"));
-      box.parentNode?.insertBefore(nextRow, box.nextSibling);
-    }
-    const exitRange = document.createRange();
-    exitRange.selectNodeContents(nextRow);
-    exitRange.collapse(true);
-    selection.removeAllRanges();
-    selection.addRange(exitRange);
-    editor.focus();
+  function applyInlineScript(kind: "subscript" | "superscript") {
+    const editor = editorRef.current;
+    if (!editor || !activateInlineScript(editor, kind)) return;
     emitChange();
     updateActiveFormats();
   }
 
-  function insertLineInsideTextBox() {
-    const editor = editorRef.current;
-    const selection = window.getSelection();
-    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
-    if (!editor || !selection || !range || !editor.contains(range.commonAncestorContainer)) {
-      return;
-    }
-
-    range.deleteContents();
-    const lineBreak = document.createElement("br");
-    const typingPoint = document.createTextNode("\u200B");
-    range.insertNode(typingPoint);
-    range.insertNode(lineBreak);
-
-    const nextRange = document.createRange();
-    nextRange.setStart(typingPoint, typingPoint.length);
-    nextRange.collapse(true);
-    selection.removeAllRanges();
-    selection.addRange(nextRange);
-    emitChange();
-    updateActiveFormats();
-  }
-
-  function returnToNormalText() {
-    const editor = editorRef.current;
-    const selection = window.getSelection();
-    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
-    if (
-      !editor ||
-      !selection ||
-      !range ||
-      !editor.contains(range.commonAncestorContainer)
-    ) {
-      return;
-    }
-
-    editor.focus();
-
-    if (range.collapsed) {
-      let currentNode: Node | null = range.startContainer;
-      let formattingAncestor: HTMLElement | null = null;
-
-      while (currentNode && currentNode !== editor) {
-        if (
-          currentNode instanceof HTMLElement &&
-          ["SUB", "SUP", "FONT"].includes(currentNode.tagName)
-        ) {
-          formattingAncestor = currentNode;
-        }
-        currentNode = currentNode.parentNode;
-      }
-
-      if (formattingAncestor?.parentNode) {
-        const normalFont = document.createElement("font");
-        normalFont.setAttribute("size", "3");
-        const typingPoint = document.createTextNode("\u200B");
-        normalFont.appendChild(typingPoint);
-        formattingAncestor.parentNode.insertBefore(
-          normalFont,
-          formattingAncestor.nextSibling
-        );
-
-        const normalRange = document.createRange();
-        normalRange.setStart(typingPoint, typingPoint.length);
-        normalRange.collapse(true);
-        selection.removeAllRanges();
-        selection.addRange(normalRange);
-      } else {
-        if (document.queryCommandState("subscript")) {
-          document.execCommand("subscript");
-        }
-        if (document.queryCommandState("superscript")) {
-          document.execCommand("superscript");
-        }
-        document.execCommand("fontSize", false, "3");
-      }
-    } else {
-      if (document.queryCommandState("subscript")) {
-        document.execCommand("subscript");
-      }
-      if (document.queryCommandState("superscript")) {
-        document.execCommand("superscript");
-      }
-      document.execCommand("fontSize", false, "3");
-    }
-
-    emitChange();
-    setActiveFormats((current) => ({
-      ...current,
-      superscript: false,
-      subscript: false,
-      fontSize: "3",
-    }));
-  }
-
-  function openMathControls() {
+  function openNumberLineControls() {
     saveEditorSelection();
-    setShowMathSymbols((current) => !current);
+    editingNumberLineRef.current = null;
+    setNumberLineDraft({ ...DEFAULT_CHOICE_NUMBER_LINE });
+    setNumberLineRevision((revision) => revision + 1);
     setShowRootControls(false);
+    setShowTableControls(false);
   }
 
-  function openRootControls() {
-    saveEditorSelection();
-    setShowRootControls((current) => !current);
-    setShowMathSymbols(false);
+  function editRenderedNumberLine(target: EventTarget | null) {
+    const node = target instanceof Element ? target.closest("[data-choice-number-line]") : null;
+    if (!allowNumberLines || !node || !editorRef.current?.contains(node)) return false;
+    const config = parseChoiceNumberLine(node.getAttribute("data-choice-number-line") || "");
+    if (!config) return false;
+    editingNumberLineRef.current = node;
+    setNumberLineDraft(config);
+    setNumberLineRevision((revision) => revision + 1);
+    setShowRootControls(false);
+    setShowTableControls(false);
+    return true;
   }
 
-  function insertCustomRoot() {
+  function commitNumberLine(config: ChoiceNumberLine | null) {
     const editor = editorRef.current;
-    const index = rootIndex.trim();
-    if (!editor || !index) return;
-
+    if (!editor) return;
     const template = document.createElement("template");
-    template.innerHTML = buildRootMathHtml(index, rootValue);
+    template.innerHTML = config ? buildChoiceNumberLineHtml(config) : "";
     const typingPoint = document.createTextNode("\u200B");
     template.content.appendChild(typingPoint);
-
+    const existing = editingNumberLineRef.current;
     const range = savedRangeRef.current;
-    if (range && editor.contains(range.commonAncestorContainer)) {
+    if (existing && editor.contains(existing)) existing.replaceWith(template.content);
+    else if (config && range && editor.contains(range.commonAncestorContainer)) {
       range.deleteContents();
       range.insertNode(template.content);
-    } else {
-      editor.appendChild(template.content);
-    }
-
+    } else if (config) editor.appendChild(template.content);
+    else return;
+    editor.focus();
     const nextRange = document.createRange();
-    nextRange.setStart(typingPoint, typingPoint.length);
+    nextRange.setStartAfter(typingPoint);
     nextRange.collapse(true);
     const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(nextRange);
     savedRangeRef.current = null;
-    setShowRootControls(false);
-    setRootValue("");
-    editor.focus();
+    editingNumberLineRef.current = null;
+    setNumberLineDraft(null);
     emitChange();
   }
 
-  function updateStructuredMathValue(field: keyof StructuredMathValues, value: string) {
-    setStructuredMathValues((current) => ({ ...current, [field]: value }));
+  function openRootControls() {
+    setNumberLineDraft(null);
+    saveEditorSelection();
+    editingMathRef.current = null;
+    setEditingExistingMath(false);
+    setMathTree(createEmptyMathExpression());
+    setShowRootControls((current) => !current);
   }
 
   function insertStructuredMath() {
-    if (structuredMathKind === "root") {
-      insertCustomRoot();
-      return;
-    }
     const editor = editorRef.current;
     if (!editor) return;
 
     const template = document.createElement("template");
-    template.innerHTML = buildStructuredMathHtml(structuredMathKind, structuredMathValues);
+    template.innerHTML = buildMathExpressionHtml(mathTree);
     const typingPoint = document.createTextNode("\u200B");
-    template.content.appendChild(typingPoint);
+    const editingMath = editingMathRef.current;
+    const replacingExistingMath = Boolean(editingMath?.isConnected);
+    if (replacingExistingMath && editingMath) {
+      const replacement = template.content.firstElementChild;
+      if (!replacement) return;
+      editingMath.replaceWith(replacement);
+      replacement.after(typingPoint);
+    } else {
+      template.content.appendChild(typingPoint);
+    }
     const range = savedRangeRef.current;
-    if (range && editor.contains(range.commonAncestorContainer)) {
+    if (!replacingExistingMath && range && editor.contains(range.commonAncestorContainer)) {
       range.deleteContents();
       range.insertNode(template.content);
-    } else {
+    } else if (!replacingExistingMath) {
       editor.appendChild(template.content);
     }
 
@@ -438,16 +338,56 @@ export default function RichTextEditor({
     selection?.removeAllRanges();
     selection?.addRange(nextRange);
     savedRangeRef.current = null;
-    setShowMathSymbols(false);
+    editingMathRef.current = null;
+    setEditingExistingMath(false);
+    setShowRootControls(false);
     editor.focus();
     emitChange();
   }
 
+  function editRenderedMath(target: EventTarget | null) {
+    const math = target instanceof Element
+      ? target.closest("math[data-math-expression]")
+      : null;
+    if (!math || !editorRef.current?.contains(math)) return false;
+    const tree = readMathExpressionTree(math);
+    if (!tree) return false;
+    editingMathRef.current = math;
+    setEditingExistingMath(true);
+    setMathTree(tree);
+    setShowRootControls(true);
+    setNumberLineDraft(null);
+    setShowTableControls(false);
+    return true;
+  }
+
+  function removeEditedMath() {
+    const editor = editorRef.current;
+    const editingMath = editingMathRef.current;
+    if (!editor || !editingMath?.isConnected || !editor.contains(editingMath)) return;
+
+    const typingPoint = document.createTextNode("\u200B");
+    editingMath.replaceWith(typingPoint);
+    const range = document.createRange();
+    range.setStart(typingPoint, typingPoint.length);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    savedRangeRef.current = null;
+    editingMathRef.current = null;
+    setEditingExistingMath(false);
+    setShowRootControls(false);
+    editor.focus();
+    emitChange();
+    updateActiveFormats();
+  }
+
   function openTableControls() {
+    setNumberLineDraft(null);
     saveEditorSelection();
     setShowTableControls(true);
     setShowRootControls(false);
-    setShowMathSymbols(false);
   }
 
   function insertTable() {
@@ -496,12 +436,11 @@ export default function RichTextEditor({
 
   const toolbarButton =
     "flex h-8 min-w-8 items-center justify-center rounded-md border border-slate-600 bg-slate-800 px-2 text-sm text-slate-100 hover:border-blue-500 hover:bg-slate-700";
-  const activeToolbarButton =
-    "border-cyan-200 bg-cyan-400 text-slate-950 ring-2 ring-cyan-200/70 shadow-md shadow-cyan-950/30 hover:bg-cyan-300";
+  const activeToolbarButton = ACTIVE_TEXT_TOOLBAR_BUTTON;
 
   return (
-    <div className="mt-2 overflow-hidden rounded-xl border border-slate-700 bg-white focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-500/20">
-      <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-700 bg-slate-900 px-2 py-2">
+    <div className={`relative mt-2 overflow-hidden rounded-xl border border-slate-700 bg-white focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-500/20 ${showRootControls || numberLineDraft ? "z-20" : ""}`}>
+      <div className="flex w-max min-w-full flex-nowrap items-center gap-1.5 border-b border-slate-700 bg-slate-900 px-2 py-2 [&>*]:shrink-0">
         <button
           type="button"
           title="Bold"
@@ -526,37 +465,36 @@ export default function RichTextEditor({
         </button>
         <button
           type="button"
+          title="Underline"
+          aria-label="Underline"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => runCommand("underline")}
+          aria-pressed={activeFormats.underline}
+          className={`${toolbarButton} underline ${activeFormats.underline ? activeToolbarButton : ""}`}
+        >
+          U
+        </button>
+        <button
+          type="button"
           title="Superscript"
           aria-label="Superscript"
           onMouseDown={(event) => event.preventDefault()}
-          onClick={() => runCommand("superscript")}
+          onClick={() => applyInlineScript("superscript")}
           aria-pressed={activeFormats.superscript}
           className={`${toolbarButton} ${activeFormats.superscript ? activeToolbarButton : ""}`}
         >
-          T<sup>2</sup>
+          <TextScriptIcon kind="superscript" />
         </button>
         <button
           type="button"
           title="Subscript"
           aria-label="Subscript"
           onMouseDown={(event) => event.preventDefault()}
-          onClick={() => runCommand("subscript")}
+          onClick={() => applyInlineScript("subscript")}
           aria-pressed={activeFormats.subscript}
           className={`${toolbarButton} ${activeFormats.subscript ? activeToolbarButton : ""}`}
         >
-          T<sub>2</sub>
-        </button>
-        <button
-          type="button"
-          title="Return to normal text"
-          aria-label="Return to normal text"
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={returnToNormalText}
-          aria-pressed={!activeFormats.superscript && !activeFormats.subscript && activeFormats.fontSize === "3"}
-          className={`${toolbarButton} ${!activeFormats.superscript && !activeFormats.subscript && activeFormats.fontSize === "3" ? activeToolbarButton : ""}`}
-        >
-          <span className="font-semibold">T</span>
-          <span className="ml-1 text-[10px] font-medium">Normal</span>
+          <TextScriptIcon kind="subscript" />
         </button>
         <div className="flex h-8 items-stretch overflow-hidden rounded-md border border-slate-600 bg-slate-800" aria-label="Font size">
           <button
@@ -588,6 +526,12 @@ export default function RichTextEditor({
           >
             +
           </button>
+        </div>
+        <div className="flex items-center gap-1" role="group" aria-label="Text alignment">
+          {(["left", "center", "right"] as const).map((alignment) => <button key={alignment} type="button" title={`Align ${alignment}`} aria-label={`Align ${alignment}`} aria-pressed={activeFormats.alignment === alignment} onMouseDown={(event) => event.preventDefault()} onClick={() => runCommand(`justify${alignment[0].toUpperCase()}${alignment.slice(1)}`)} className={`${toolbarButton} ${activeFormats.alignment === alignment ? activeToolbarButton : ""}`}><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">{alignment === "left" ? <path d="M3 4h14M3 8h9M3 12h14M3 16h9" /> : alignment === "center" ? <path d="M3 4h14M5.5 8h9M3 12h14M5.5 16h9" /> : <path d="M3 4h14M8 8h9M3 12h14M8 16h9" />}</svg></button>)}
+        </div>
+        <div className="flex items-center gap-1" role="group" aria-label="Vertical text alignment">
+          {(["top", "middle", "bottom"] as const).map((alignment) => <button key={alignment} type="button" title={`Align ${alignment}`} aria-label={`Align text to the ${alignment}`} aria-pressed={currentVerticalAlign === alignment} onMouseDown={(event) => event.preventDefault()} onClick={() => changeVerticalAlign(alignment)} className={`${toolbarButton} ${currentVerticalAlign === alignment ? activeToolbarButton : ""}`}><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="h-4 w-4" aria-hidden="true"><path d="M3 3h14M3 17h14" />{alignment === "top" ? <path d="M6 6h8M8 9h4" /> : alignment === "middle" ? <path d="M6 8h8M8 11h4" /> : <path d="M8 11h4M6 14h8" />}</svg></button>)}
         </div>
         <span className="mx-1 h-6 w-px bg-slate-700" />
         <button
@@ -648,89 +592,29 @@ export default function RichTextEditor({
         </button>
         <button
           type="button"
-          title="Editable math notation"
-          aria-label="Editable math notation"
+          title="Math expression builder"
+          aria-label="Math expression builder"
           aria-expanded={showRootControls}
           onMouseDown={(event) => event.preventDefault()}
           onClick={openRootControls}
           className={`${toolbarButton} ${showRootControls ? activeToolbarButton : ""}`}
         >
-          <span className="relative block h-5 w-9" aria-hidden="true">
-            <span className="absolute left-0 top-0 h-2 w-2 rounded-[2px] border border-current" />
-            <span className="absolute bottom-0 left-1 text-lg leading-none">√</span>
-            <span className="absolute bottom-0 right-0 h-3.5 w-4 rounded-[2px] border border-current" />
-          </span>
+          <span className="text-base" aria-hidden="true">∑</span>
         </button>
-        <button
-          type="button"
-          title="Basic math symbols"
-          aria-label="Basic math symbols"
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={openMathControls}
-          aria-expanded={showMathSymbols}
-          className={`${toolbarButton} ${showMathSymbols ? activeToolbarButton : ""}`}
-        >
-          <span className="text-base font-semibold">π ±</span>
-        </button>
+        {allowNumberLines && <button type="button" title="Build a number line" aria-label="Build a number line" aria-expanded={Boolean(numberLineDraft)} onMouseDown={(event) => event.preventDefault()} onClick={openNumberLineControls} className={`${toolbarButton} ${numberLineDraft ? activeToolbarButton : ""}`}>↔ Number line</button>}
       </div>
+      {allowNumberLines && numberLineDraft && <ChoiceNumberLineBuilder key={numberLineRevision} initial={numberLineDraft} editing={Boolean(editingNumberLineRef.current)} onSave={commitNumberLine} onCancel={() => { setNumberLineDraft(null); editingNumberLineRef.current = null; }} onDelete={() => commitNumberLine(null)} />}
       {showRootControls && (
         <div className="border-b border-slate-200 bg-slate-50 px-3 py-3">
-          <p className="mb-2 text-xs font-semibold text-slate-600">Editable math notation</p>
-          <div className="flex flex-wrap gap-1.5">
-            {(["root", "summation", "product", "integral", "limit", "fraction"] as const).map((kind) => <button
-              key={kind}
-              type="button"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => setStructuredMathKind(kind)}
-              aria-pressed={structuredMathKind === kind}
-              className={`flex h-10 items-center gap-2 rounded-lg border px-3 text-sm font-semibold ${structuredMathKind === kind ? "border-blue-500 bg-blue-600 text-white" : "border-slate-300 bg-white text-slate-800 hover:border-blue-400 hover:bg-blue-50"}`}
-            >
-              <span className="text-lg" aria-hidden="true">{kind === "root" ? "ⁿ√" : kind === "summation" ? "∑" : kind === "product" ? "∏" : kind === "integral" ? "∫" : kind === "limit" ? "lim" : "a⁄b"}</span>
-              <span className="capitalize">{kind}</span>
-            </button>)}
-          </div>
-          <div className="mt-3 flex flex-wrap items-end gap-2 rounded-xl border border-blue-200 bg-white p-3">
-            {structuredMathKind === "root" && <>
-              <label className="text-xs font-semibold text-slate-600">Root index<input value={rootIndex} onChange={(event) => setRootIndex(event.target.value)} placeholder="n" className="mt-1 block h-9 w-24 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>
-              <label className="min-w-40 flex-1 text-xs font-semibold text-slate-600">Value inside root<input value={rootValue} onChange={(event) => setRootValue(event.target.value)} placeholder="value" className="mt-1 block h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>
-            </>}
-            {(structuredMathKind === "summation" || structuredMathKind === "product" || structuredMathKind === "integral") && <>
-              <label className="text-xs font-semibold text-slate-600">Lower limit<input value={structuredMathValues.lower} onChange={(event) => updateStructuredMathValue("lower", event.target.value)} placeholder={structuredMathKind === "integral" ? "a" : "i = 1"} className="mt-1 block h-9 w-28 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>
-              <label className="text-xs font-semibold text-slate-600">Upper limit<input value={structuredMathValues.upper} onChange={(event) => updateStructuredMathValue("upper", event.target.value)} placeholder={structuredMathKind === "integral" ? "b" : "n"} className="mt-1 block h-9 w-28 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>
-              <label className="min-w-40 flex-1 text-xs font-semibold text-slate-600">{structuredMathKind === "integral" ? "Integrand" : "Expression"}<input value={structuredMathValues.expression} onChange={(event) => updateStructuredMathValue("expression", event.target.value)} placeholder={structuredMathKind === "integral" ? "f(x)" : "aᵢ"} className="mt-1 block h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>
-              {structuredMathKind === "integral" && <label className="text-xs font-semibold text-slate-600">Variable<input value={structuredMathValues.variable} onChange={(event) => updateStructuredMathValue("variable", event.target.value)} placeholder="x" className="mt-1 block h-9 w-20 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>}
-            </>}
-            {structuredMathKind === "limit" && <>
-              <label className="text-xs font-semibold text-slate-600">Variable<input value={structuredMathValues.variable} onChange={(event) => updateStructuredMathValue("variable", event.target.value)} placeholder="x" className="mt-1 block h-9 w-20 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>
-              <label className="text-xs font-semibold text-slate-600">Approaches<input value={structuredMathValues.approach} onChange={(event) => updateStructuredMathValue("approach", event.target.value)} placeholder="0" className="mt-1 block h-9 w-24 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>
-              <label className="min-w-40 flex-1 text-xs font-semibold text-slate-600">Expression<input value={structuredMathValues.expression} onChange={(event) => updateStructuredMathValue("expression", event.target.value)} placeholder="f(x)" className="mt-1 block h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>
-            </>}
-            {structuredMathKind === "fraction" && <>
-              <label className="min-w-40 flex-1 text-xs font-semibold text-slate-600">Numerator<input value={structuredMathValues.numerator} onChange={(event) => updateStructuredMathValue("numerator", event.target.value)} placeholder="a + b" className="mt-1 block h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>
-              <label className="min-w-40 flex-1 text-xs font-semibold text-slate-600">Denominator<input value={structuredMathValues.denominator} onChange={(event) => updateStructuredMathValue("denominator", event.target.value)} placeholder="c" className="mt-1 block h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950" /></label>
-            </>}
-            <div className="flex h-14 min-w-32 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 px-4 text-xl text-slate-950" aria-label="Math notation preview" dangerouslySetInnerHTML={{ __html: structuredMathKind === "root" ? buildRootMathHtml(rootIndex, rootValue) : buildStructuredMathHtml(structuredMathKind, structuredMathValues) }} />
-            <button type="button" onClick={insertStructuredMath} disabled={structuredMathKind === "root" && !rootIndex.trim()} className="h-9 rounded-lg bg-blue-600 px-4 text-xs font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50">Insert notation</button>
-          </div>
-        </div>
-      )}
-      {showMathSymbols && (
-        <div className="border-b border-slate-200 bg-slate-50 px-3 py-3">
-          <p className="mb-2 text-xs font-semibold text-slate-600">Basic math symbols</p>
-          <div className="flex flex-wrap gap-1.5">
-            {["√", "∛", "π", "θ", "Δ", "∞", "±", "×", "÷", "≠", "≈", "≤", "≥", "°", "→", "←", "∈", "∉", "∠", "⊥", "∥", "%"].map((symbol) => (
-              <button
-                key={symbol}
-                type="button"
-                title={`Insert ${symbol}`}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => runCommand("insertText", symbol)}
-                className="flex h-9 min-w-9 items-center justify-center rounded-lg border border-slate-300 bg-white px-2 text-base font-medium text-slate-800 hover:border-blue-400 hover:bg-blue-50"
-              >
-                {symbol}
-              </button>
-            ))}
-          </div>
+          <p className="mb-2 text-xs font-semibold text-slate-600">Build math notation</p>
+          <MathExpressionComposer
+            value={mathTree}
+            onChange={setMathTree}
+            onCommit={insertStructuredMath}
+            onCancel={() => { editingMathRef.current = null; setEditingExistingMath(false); setShowRootControls(false); }}
+            onDelete={removeEditedMath}
+            editingExisting={editingExistingMath}
+          />
         </div>
       )}
       {showTableControls && (
@@ -793,45 +677,50 @@ export default function RichTextEditor({
           </button>
         </div>
       )}
-      <div
-        ref={editorRef}
-        contentEditable
-        suppressContentEditableWarning
-        role="textbox"
-        aria-multiline="true"
-        data-placeholder={placeholder}
-        onInput={() => {
-          emitChange();
-          updateActiveFormats();
-        }}
-        onKeyDown={(event) => {
-          if (event.key !== "Enter") return;
-
-          const selection = window.getSelection();
-          const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
-          const startElement =
-            range?.startContainer instanceof HTMLElement
-              ? range.startContainer
-              : range?.startContainer.parentElement;
-
-          if (startElement?.closest('[data-text-box="true"]')) {
+      <div className={`flex flex-col ${currentVerticalAlign === "middle" ? "justify-center" : currentVerticalAlign === "bottom" ? "justify-end" : "justify-start"}`} style={{ minHeight }}>
+        <div
+          ref={editorRef}
+          contentEditable
+          suppressContentEditableWarning
+          role="textbox"
+          aria-multiline="true"
+          data-placeholder={placeholder}
+          onPointerDown={(event) => {
+            if (event.target instanceof Element && event.target.closest("math[data-math-expression]")) {
+              event.preventDefault();
+              placeCaretAfterMath(event.currentTarget, event.target);
+            }
+          }}
+          onDoubleClick={(event) => {
+            if (!editRenderedNumberLine(event.target) && !editRenderedMath(event.target)) return;
             event.preventDefault();
-            insertLineInsideTextBox();
-          }
-        }}
-        onPaste={(event) => {
-          event.preventDefault();
-          document.execCommand(
-            "insertText",
-            false,
-            event.clipboardData.getData("text/plain")
-          );
-          emitChange();
-          updateActiveFormats();
-        }}
-        className="rich-text-content rich-text-editor px-4 py-3 text-slate-900 outline-none"
-        style={{ minHeight }}
-      />
+          }}
+          onInput={() => {
+            if (editorRef.current) normalizeFractionBracketsAtCaret(editorRef.current);
+            emitChange();
+            updateActiveFormats();
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.nativeEvent.isComposing && insertLineInTextBox(event.currentTarget)) {
+              event.preventDefault();
+              event.stopPropagation();
+              emitChange();
+              updateActiveFormats();
+            }
+          }}
+          onPaste={(event) => {
+            event.preventDefault();
+            document.execCommand(
+              "insertText",
+              false,
+              event.clipboardData.getData("text/plain")
+            );
+            emitChange();
+            updateActiveFormats();
+          }}
+          className="rich-text-content rich-text-editor min-h-[1lh] px-4 py-3 text-slate-900 outline-none"
+        />
+      </div>
     </div>
   );
 }

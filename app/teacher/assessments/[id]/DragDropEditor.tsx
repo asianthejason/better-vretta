@@ -1,16 +1,23 @@
 "use client";
 
-import { useState } from "react";
-import { createDefaultDragDropData, getSequenceTargetCount, makeDragDropId, type DragDropData, type DragDropPreset } from "@/lib/dragDrop";
+import { useRef, useState } from "react";
+import { createDefaultDragDropData, getDragDropItemHtml, getInlineBlankCount, getInlineBlankSegments, getInlineChoiceBoxSize, getSequenceTargetCount, INLINE_BLANK_TOKEN, makeDragDropId, removeInlineBlank, type DragDropData, type DragDropPreset, type DragDropZone } from "@/lib/dragDrop";
 import LocationCanvasEditor from "./LocationCanvasEditor";
+import RichTextEditor from "./RichTextEditor";
 
 const presets: { id: DragDropPreset; name: string; description: string }[] = [
   { id: "categories", name: "Sort into groups", description: "Place items into labelled categories." },
   { id: "sequence", name: "Put in order", description: "Arrange items into a correct sequence." },
   { id: "locations", name: "Match locations", description: "Place labels on an image or diagram." },
   { id: "inline", name: "Complete blanks", description: "Drop choices into blanks in a sentence." },
-  { id: "freeform", name: "Free placement", description: "Arrange items on an open canvas." },
 ];
+
+const makeInlineZone = (index: number): DragDropZone => ({
+  id: makeDragDropId(),
+  label: `Blank ${index + 1}`,
+  correctItemIds: [],
+  capacity: 1,
+});
 
 type UploadedImage = { id?: string; url: string; path: string; label: string };
 
@@ -20,6 +27,11 @@ export function DragDropPresetPicker({ value, onChange }: { value: DragDropData;
     if (preset === "sequence") {
       const targetCount = getSequenceTargetCount(value);
       zones = [{ id: zones[0]?.id || makeDragDropId(), label: "Correct order", correctItemIds: value.items.slice(0, targetCount).map((item) => item.id), capacity: targetCount, orderMatters: true }];
+    } else if (preset === "inline") {
+      if (value.preset !== "inline") {
+        const blankCount = Math.max(1, getInlineBlankCount(value.inlineText || ""));
+        zones = Array.from({ length: blankCount }, (_, index) => makeInlineZone(index));
+      }
     } else if (preset === "locations") {
       zones = (zones.length ? zones : createDefaultDragDropData().zones).map((zone, index) => ({
         ...zone,
@@ -34,14 +46,17 @@ export function DragDropPresetPicker({ value, onChange }: { value: DragDropData;
     } else if (zones.length < 2) {
       zones = [zones[0] || createDefaultDragDropData().zones[0], { id: makeDragDropId(), label: "Target 2", correctItemIds: [], capacity: null }];
     }
-    onChange({ ...value, preset, zones });
+    const inlineText = preset === "inline" && value.preset !== "inline"
+      ? (getInlineBlankCount(value.inlineText || "") ? value.inlineText : value.inlineText?.trim() ? `${value.inlineText.trim()} ${INLINE_BLANK_TOKEN}` : `Complete the sentence: ${INLINE_BLANK_TOKEN}`)
+      : value.inlineText;
+    onChange({ ...value, preset, zones, inlineText });
   };
 
   return (
     <section className="text-slate-800">
       <h3 className="font-semibold text-slate-900">Choose a starting layout</h3>
       <p className="mt-1 text-sm text-slate-400">You can change the layout without creating a different question type.</p>
-      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         {presets.map((preset) => <button key={preset.id} type="button" onClick={() => setPreset(preset.id)} className={`rounded-xl border p-3 text-left transition ${value.preset === preset.id ? "border-blue-400 bg-blue-500/20" : "border-slate-700 bg-slate-950 hover:border-blue-500"}`}>
           <span className="block text-sm font-semibold text-slate-900">{preset.name}</span><span className="mt-1 block text-xs text-slate-500">{preset.description}</span>
         </button>)}
@@ -52,8 +67,12 @@ export function DragDropPresetPicker({ value, onChange }: { value: DragDropData;
 
 export default function DragDropEditor({ value, onChange, uploadedImages, itemPreviewUrls, onItemImageFileChange, onChooseItemImage, onRemoveItemImage, onUploadBackground, onDeleteUploadedImage }: { value: DragDropData; onChange: (value: DragDropData) => void; uploadedImages: UploadedImage[]; itemPreviewUrls: Record<string, string>; onItemImageFileChange: (itemId: string, file: File | null) => void; onChooseItemImage: (itemId: string, image: UploadedImage) => void; onRemoveItemImage: (itemId: string) => void; onUploadBackground: (file: File) => Promise<{ url: string; path: string }>; onDeleteUploadedImage: (image: UploadedImage & { id: string }) => void }) {
   const [pickerItemId, setPickerItemId] = useState<string | null>(null);
+  const [editingInlineBlankIndex, setEditingInlineBlankIndex] = useState<number | null>(null);
+  const inlineTextRef = useRef<HTMLTextAreaElement>(null);
   const update = (patch: Partial<DragDropData>) => onChange({ ...value, ...patch });
   const sequenceTargetCount = getSequenceTargetCount(value);
+  const inlineBoxSize = getInlineChoiceBoxSize(value.items.map((item) => ({ ...item, imageUrl: itemPreviewUrls[item.id] || item.imageUrl })));
+  const inlineBoxStyle = { width: `${inlineBoxSize.width}px`, height: `${inlineBoxSize.height}px` };
   const fillSequenceOrder = (items: DragDropData["items"], currentOrder: string[], count: number) => {
     const validIds = new Set(items.map((item) => item.id));
     const order = currentOrder.filter((id, index) => validIds.has(id) && currentOrder.indexOf(id) === index).slice(0, count);
@@ -67,7 +86,9 @@ export default function DragDropEditor({ value, onChange, uploadedImages, itemPr
     items,
     zones: value.preset === "sequence"
       ? value.zones.map((zone, index) => index ? zone : { ...zone, correctItemIds: fillSequenceOrder(items, zone.correctItemIds, sequenceTargetCount), capacity: sequenceTargetCount })
-      : value.zones,
+      : value.preset === "inline"
+        ? value.zones.map((zone) => ({ ...zone, correctItemIds: zone.correctItemIds.filter((itemId) => items.some((item) => item.id === itemId)) }))
+        : value.zones,
   });
   const setSequenceTargetCount = (count: number) => {
     const nextCount = Math.max(1, Math.min(12, count));
@@ -90,14 +111,62 @@ export default function DragDropEditor({ value, onChange, uploadedImages, itemPr
     }
     update({ zones: value.zones.map((current, index) => index ? current : { ...current, correctItemIds: order, capacity: sequenceTargetCount, orderMatters: true }) });
   };
+  const setInlineText = (inlineText: string) => {
+    const blankCount = getInlineBlankCount(inlineText);
+    const zones = value.zones.slice(0, blankCount);
+    while (zones.length < blankCount) zones.push(makeInlineZone(zones.length));
+    if (editingInlineBlankIndex !== null && editingInlineBlankIndex >= blankCount) setEditingInlineBlankIndex(null);
+    update({ inlineText, zones });
+  };
+  const addInlineBlank = () => {
+    const currentText = value.inlineText || "";
+    const selectionStart = inlineTextRef.current?.selectionStart ?? currentText.length;
+    const selectionEnd = inlineTextRef.current?.selectionEnd ?? selectionStart;
+    const prefix = selectionStart > 0 && !/\s/.test(currentText[selectionStart - 1]) ? " " : "";
+    const suffix = selectionEnd === currentText.length || /[\s.,;:!?]/.test(currentText[selectionEnd] || "") ? "" : " ";
+    const insertion = `${prefix}${INLINE_BLANK_TOKEN}${suffix}`;
+    const nextText = `${currentText.slice(0, selectionStart)}${insertion}${currentText.slice(selectionEnd)}`;
+    const insertedBlankIndex = getInlineBlankCount(currentText.slice(0, selectionStart));
+    setInlineText(nextText);
+    setEditingInlineBlankIndex(insertedBlankIndex);
+    requestAnimationFrame(() => {
+      const nextCaret = selectionStart + insertion.length;
+      inlineTextRef.current?.focus();
+      inlineTextRef.current?.setSelectionRange(nextCaret, nextCaret);
+    });
+  };
+  const removeInlineBlankAt = (index: number) => {
+    setEditingInlineBlankIndex(null);
+    update({
+      inlineText: removeInlineBlank(value.inlineText || "", index),
+      zones: value.zones.filter((_, zoneIndex) => zoneIndex !== index).map((zone, zoneIndex) => ({ ...zone, label: `Blank ${zoneIndex + 1}` })),
+    });
+  };
 
   return <div className="space-y-6 text-slate-800">
     {value.preset === "freeform" && <label className="block text-sm text-slate-300">Background image URL
       <input value={value.backgroundImageUrl || ""} onChange={(e) => update({ backgroundImageUrl: e.target.value })} placeholder="Paste an uploaded image URL" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white" />
     </label>}
-    {value.preset === "inline" && <label className="block text-sm text-slate-300">Sentence or passage
-      <textarea value={value.inlineText || ""} onChange={(e) => update({ inlineText: e.target.value })} placeholder="Use the target labels to mark the blanks students will complete." className="mt-1 min-h-24 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white" />
-    </label>}
+    {value.preset === "inline" && <section className="rounded-xl border border-slate-300 bg-white p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-semibold text-slate-950">Sentence or passage</h3><p className="mt-1 text-sm text-slate-500">Place the cursor where the answer belongs, then add a blank.</p></div><button type="button" onClick={addInlineBlank} className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-500">+ Add blank</button></div>
+      <textarea ref={inlineTextRef} value={value.inlineText || ""} onChange={(event) => setInlineText(event.target.value)} placeholder={`Example: Space junk ${INLINE_BLANK_TOKEN} because...`} className="mt-3 min-h-32 w-full rounded-lg border border-slate-300 bg-white px-3 py-3 text-slate-950 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" />
+      <p className="mt-2 text-xs text-slate-500">Each <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-slate-700">{INLINE_BLANK_TOKEN}</code> becomes a drop target.</p>
+      <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 text-lg leading-10 text-slate-950">{getInlineBlankSegments(value.inlineText || "").length ? getInlineBlankSegments(value.inlineText || "").map((segment, index) => {
+        if (segment.type === "text") return <span key={index} className="whitespace-pre-wrap">{segment.content}</span>;
+        const zone = value.zones[segment.index];
+        const assignedItem = value.items.find((item) => item.id === zone?.correctItemIds[0]);
+        const assignedLabel = assignedItem?.content || (assignedItem ? `Choice ${value.items.indexOf(assignedItem) + 1}` : "");
+        const selected = editingInlineBlankIndex === segment.index;
+        return <span key={index} style={inlineBoxStyle} className="relative mx-1 inline-flex box-border align-middle">
+          <button type="button" onClick={() => setEditingInlineBlankIndex((current) => current === segment.index ? null : segment.index)} aria-expanded={selected} className={`flex h-full w-full items-center justify-center border-2 border-dashed px-3 text-center text-sm font-semibold leading-tight transition ${assignedItem ? "border-emerald-500 bg-emerald-50 text-emerald-900" : "border-amber-400 bg-amber-50 text-amber-800"}`}>{assignedLabel || "Select answer"}</button>
+          {selected && zone && <span className="absolute left-1/2 top-full z-50 mt-2 block w-72 max-w-[calc(100vw-4rem)] -translate-x-1/2 rounded-xl border border-blue-300 bg-white p-3 text-left text-sm leading-normal shadow-xl">
+            <span className="flex items-center justify-between gap-2"><strong className="text-slate-950">Correct answer</strong><button type="button" onClick={() => setEditingInlineBlankIndex(null)} className="grid h-6 w-6 place-items-center rounded-full bg-slate-100 font-bold text-slate-700" aria-label="Close answer editor">×</button></span>
+            <select autoFocus value={zone.correctItemIds[0] || ""} onChange={(event) => update({ zones: value.zones.map((current, zoneIndex) => zoneIndex === segment.index ? { ...current, label: `Blank ${segment.index + 1}`, correctItemIds: event.target.value ? [event.target.value] : [], capacity: 1 } : current) })} className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-950"><option value="">Choose an answer</option>{value.items.map((item, itemIndex) => <option key={item.id} value={item.id}>{item.content || `Choice ${itemIndex + 1}`}</option>)}</select>
+            <button type="button" onClick={() => removeInlineBlankAt(segment.index)} className="mt-2 w-full rounded-lg border border-red-300 bg-white px-3 py-2 font-semibold text-red-700 hover:bg-red-50">Remove this blank</button>
+          </span>}
+        </span>;
+      }) : <span className="text-slate-400">Your passage preview appears here.</span>}</div>
+    </section>}
 
     {value.preset === "sequence" && (
       <section>
@@ -124,12 +193,17 @@ export default function DragDropEditor({ value, onChange, uploadedImages, itemPr
       </section>
     )}
 
-    <div className={`grid gap-6 ${value.preset === "sequence" || value.preset === "locations" ? "grid-cols-1" : "lg:grid-cols-2"}`}>
+    <div className={`grid gap-6 ${value.preset === "sequence" || value.preset === "locations" || value.preset === "inline" ? "grid-cols-1" : "lg:grid-cols-2"}`}>
       {value.preset !== "locations" && <section className="rounded-xl border border-slate-700 bg-slate-950/50 p-4">
         <div className="flex items-center justify-between"><div><h3 className="font-semibold text-slate-900">{value.preset === "sequence" ? "Draggable choices" : "Draggable items"}</h3>{value.preset === "sequence" && <p className="mt-1 text-xs text-slate-500">Add the choices students can place. Extra choices become distractors.</p>}</div><button type="button" onClick={() => setItems([...value.items, { id: makeDragDropId(), content: `Item ${value.items.length + 1}` }])} className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-500">+ Add choice</button></div>
         <div className="mt-3 space-y-3">{value.items.map((item, index) => <div key={item.id} className="rounded-lg border border-slate-700 p-3">
           <div className={`grid gap-2 ${value.preset === "sequence" ? "grid-cols-[minmax(0,1fr)_11rem_auto]" : "grid-cols-[minmax(0,1fr)_auto]"}`}>
-            <input value={item.content} onChange={(e) => setItems(value.items.map((current) => current.id === item.id ? { ...current, content: e.target.value } : current))} className="min-w-0 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white" />
+            <RichTextEditor allowNumberLines value={getDragDropItemHtml(item)} placeholder={`Item ${index + 1}`} minHeight="5.5rem" onChange={(html) => {
+              const container = document.createElement("div");
+              container.innerHTML = html.replace(/<br\s*\/?>(?!$)/gi, "\n").replace(/<\/(?:div|p|tr)>/gi, "\n");
+              const content = (container.textContent || "").replaceAll("\u200B", "").trim();
+              setItems(value.items.map((current) => current.id === item.id ? { ...current, content, contentHtml: html } : current));
+            }} />
             {value.preset === "sequence" && <select value={Math.max(0, (value.zones[0]?.correctItemIds.indexOf(item.id) ?? -1) + 1)} onChange={(event) => { const position = Number(event.target.value); setSequenceItemPosition(item.id, position ? position - 1 : null); }} className="rounded-lg border border-blue-300 bg-blue-50 px-3 py-2 text-sm font-bold text-blue-900" aria-label={`Correct position for ${item.content || `choice ${index + 1}`}`}><option value={0}>Distractor</option>{Array.from({ length: sequenceTargetCount }, (_, position) => <option key={position} value={position + 1}>Position {position + 1}</option>)}</select>}
             <button type="button" onClick={() => setItems(value.items.filter((current) => current.id !== item.id))} className="rounded-lg border border-red-800 px-3 text-red-300">Remove</button>
           </div>
@@ -154,7 +228,7 @@ export default function DragDropEditor({ value, onChange, uploadedImages, itemPr
         </div>)}</div>
       </section>}
 
-      {value.preset !== "sequence" && value.preset !== "locations" && <section className="rounded-xl border border-slate-700 bg-slate-950/50 p-4">
+      {value.preset !== "sequence" && value.preset !== "locations" && value.preset !== "inline" && <section className="rounded-xl border border-slate-700 bg-slate-950/50 p-4">
         <div className="flex items-center justify-between"><h3 className="font-semibold text-slate-900">Drop targets</h3><button type="button" onClick={() => update({ zones: [...value.zones, { id: makeDragDropId(), label: `Target ${value.zones.length + 1}`, correctItemIds: [], capacity: null, x: 10, y: 10, width: 25, height: 18 }] })} className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-500">+ Add target</button></div>
         <div className="mt-3 space-y-3">{value.zones.map((zone) => <div key={zone.id} className="rounded-lg border border-slate-700 p-3">
           <div className="flex gap-2"><input value={zone.label} onChange={(e) => update({ zones: value.zones.map((z) => z.id === zone.id ? { ...z, label: e.target.value } : z) })} className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-white" /><button type="button" onClick={() => update({ zones: value.zones.filter((z) => z.id !== zone.id) })} className="rounded-lg border border-red-800 px-3 text-red-300">Remove</button></div>
@@ -171,6 +245,12 @@ export default function DragDropEditor({ value, onChange, uploadedImages, itemPr
           <input type="checkbox" checked={value.settings.shuffleItems} onChange={(e) => update({ settings: { ...value.settings, shuffleItems: e.target.checked } })} className="mt-1" />
           <span><strong className="block text-slate-900">Shuffle items</strong><span className="text-xs text-slate-500">Give each student the choices in a random order.</span></span>
         </label>
+        {value.preset === "inline" && (
+          <label className="flex items-start gap-2">
+            <input type="checkbox" checked={value.settings.allowReuse} onChange={(e) => update({ settings: { ...value.settings, allowReuse: e.target.checked } })} className="mt-1" />
+            <span><strong className="block text-slate-900">Allow choice reuse</strong><span className="text-xs text-slate-500">Let students use the same choice in more than one blank.</span></span>
+          </label>
+        )}
         {value.preset !== "categories" && (
           <label className="flex items-start gap-2">
             <input type="checkbox" checked={value.settings.showZoneOutlines} onChange={(e) => update({ settings: { ...value.settings, showZoneOutlines: e.target.checked } })} className="mt-1" />

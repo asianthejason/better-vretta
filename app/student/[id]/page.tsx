@@ -6,12 +6,24 @@ import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import ImageMarkup from "./ImageMarkup";
 import DragDropQuestion from "./DragDropQuestion";
-import { gradeDragDrop, isDragDropAnswered, normalizeDragDropData, type DragDropData, type DragDropPlacements } from "@/lib/dragDrop";
+import StudentAssessmentFrame from "./StudentAssessmentFrame";
+import FillBlankQuestion from "@/app/components/FillBlankQuestion";
+import QuestionCanvas from "@/app/components/QuestionCanvas";
+import CanvasDropdownField from "@/app/components/CanvasDropdownField";
+import CanvasFillBlankField from "@/app/components/CanvasFillBlankField";
+import { asLocationDragDropData, getChoiceContentSizes, gradeDragDrop, isDragDropAnswered, normalizeCanvasHeight, normalizeDragDropData, type DragDropData, type DragDropPlacements } from "@/lib/dragDrop";
+import { dropdownIsAnswered, getDropdownEntryOptions, getDropdownSegments, gradeDropdown, normalizeDropdownData, type DropdownEntry, type DropdownQuestionData, type DropdownResponses } from "@/lib/dropdownQuestion";
+import { fillBlankIsAnswered, getFillBlankBounds, gradeFillBlank, normalizeFillBlankData, type FillBlankData } from "@/lib/fillBlank";
+import { getMultipleChoiceSelectionMode, gradeMultipleChoice, normalizeMultipleChoiceResponse, toggleMultipleChoiceAnswer, type MultipleChoiceSelectionMode } from "@/lib/multipleChoice";
 import { lockdownFrameWasInterrupted, lockdownPageLostFocus } from "@/lib/lockdownMonitor";
+import { normalizeQuestionCanvas, type QuestionCanvasData } from "@/lib/questionCanvas";
+import { hydratePrivateImageUrls } from "@/lib/privateImageUrls";
 
 type QuestionType =
   | "multiple-choice"
   | "drag-and-drop"
+  | "sort-into-groups"
+  | "dropdown"
   | "short-answer"
   | "fill-in-the-blank"
   | "image-question"
@@ -84,6 +96,7 @@ type Assessment = {
   title: string;
   description: string | null;
   is_published: boolean;
+  formula_sheet?: QuestionCanvasData | null;
 };
 
 type AssessmentEntryState = {
@@ -111,10 +124,13 @@ type Question = {
     choiceImages?: MultipleChoiceImage[];
     choiceHtml?: string[];
     choiceTable?: ChoiceTable;
+    selectionMode?: MultipleChoiceSelectionMode;
     correctAnswer?: string;
+    correctAnswers?: string[];
     answerBoxes?: AnswerBox[];
     template?: string;
     blanks?: BlankBox[];
+    fillBlank?: FillBlankData;
     imageUrl?: string;
     imagePath?: string;
     overlayBoxes?: OverlayBox[];
@@ -125,6 +141,7 @@ type Question = {
     sortingCategories?: SortingCategory[];
     correctOrder?: string[];
     dragDrop?: DragDropData;
+    dropdown?: DropdownQuestionData;
     layout?: "standard" | "split";
     leftPanelTitle?: string;
     leftPanelTopContent?: string;
@@ -132,6 +149,8 @@ type Question = {
     leftPanelImageUrl?: string;
     leftPanelImagePath?: string;
     leftPanelTable?: LeftPanelTable;
+    canvas?: QuestionCanvasData;
+    leftCanvas?: QuestionCanvasData;
   };
   question_order: number;
 };
@@ -144,43 +163,6 @@ type SortingCategoryResponses = Record<string, Record<string, string>>;
 
 function getMultipleChoiceValue(choice: string, index: number) {
   return choice || `__image_choice_${index + 1}__`;
-}
-
-function parseFillInBlankTemplate(template: string) {
-  const parts: { type: "text" | "blank"; value: string; blankIndex?: number }[] =
-    [];
-
-  const regex = /\[\[(.*?)\]\]/g;
-  let lastIndex = 0;
-  let blankIndex = 0;
-  let match;
-
-  while ((match = regex.exec(template)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push({
-        type: "text",
-        value: template.slice(lastIndex, match.index),
-      });
-    }
-
-    parts.push({
-      type: "blank",
-      value: "",
-      blankIndex,
-    });
-
-    blankIndex += 1;
-    lastIndex = regex.lastIndex;
-  }
-
-  if (lastIndex < template.length) {
-    parts.push({
-      type: "text",
-      value: template.slice(lastIndex),
-    });
-  }
-
-  return parts;
 }
 
 function normalizeAnswer(answer: string | undefined) {
@@ -217,6 +199,31 @@ function leftPanelTableHasContent(table: LeftPanelTable | undefined) {
   );
 }
 
+function dropdownEntryBounds(entry: DropdownEntry, index: number) {
+  const x = entry.x ?? 8 + (index % 3) * 24;
+  const y = entry.y ?? Math.min(84, 35 + Math.floor(index / 3) * 14);
+  return { x, y, width: Math.min(entry.width ?? 20, 100 - x), height: Math.min(entry.height ?? 8, 100 - y) };
+}
+
+function StudentReferencePanel({ data, compact = false }: { data: Question["question_data"]; compact?: boolean }) {
+  return (
+    <div className={`h-full overflow-auto bg-slate-50/70 text-slate-900 ${compact ? "p-[3cqw]" : "p-4 sm:p-6 lg:p-8"}`}>
+      <p className={`${compact ? "text-[1.15cqw]" : "text-xs"} font-semibold uppercase tracking-wider text-slate-400`}>Reference material</p>
+      {data.leftPanelTitle && <h2 className={`${compact ? "mt-[1.4cqw] text-[2.2cqw]" : "mt-3 text-2xl"} font-bold leading-tight`}>{data.leftPanelTitle}</h2>}
+      {data.leftPanelTopContent && <div className={`rich-text-content ${compact ? "mt-[1.8cqw] text-[1.65cqw]" : "mt-5 text-lg"} text-slate-800`} dangerouslySetInnerHTML={{ __html: data.leftPanelTopContent }} />}
+      {data.leftPanelImageUrl && <div className={compact ? "mt-[1.8cqw]" : "mt-5"}><ImageMarkup src={data.leftPanelImageUrl} alt={data.leftPanelTitle || "Question reference"} /></div>}
+      {data.leftPanelContent && <div className={`rich-text-content ${compact ? "mt-[1.8cqw] text-[1.65cqw]" : "mt-5 text-lg"} text-slate-800`} dangerouslySetInnerHTML={{ __html: data.leftPanelContent }} />}
+      {leftPanelTableHasContent(data.leftPanelTable) && (
+        <div className={compact ? "mt-[1.8cqw] overflow-x-auto" : "mt-5 overflow-x-auto"}>
+          <table className={`w-full border-collapse text-left ${compact ? "text-[1.35cqw]" : "text-base"} ${data.leftPanelTable?.hasBorder ? "border border-slate-300" : ""}`}>
+            <tbody>{data.leftPanelTable?.cells.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, columnIndex) => { const Cell = rowIndex === 0 ? "th" : "td"; return <Cell key={columnIndex} className={`${compact ? "px-[1.1cqw] py-[0.8cqw]" : "px-4 py-3"} ${rowIndex === 0 ? "font-semibold" : ""} ${data.leftPanelTable?.hasBorder ? "border border-slate-300" : ""}`}>{cell}</Cell>; })}</tr>)}</tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function StudentAssessmentPage({
   params,
 }: {
@@ -232,7 +239,7 @@ export default function StudentAssessmentPage({
   const [studentName, setStudentName] = useState("");
 
   const [multipleChoiceAnswers, setMultipleChoiceAnswers] = useState<
-    Record<string, string>
+    Record<string, string[]>
   >({});
 
   const [shortAnswerResponses, setShortAnswerResponses] = useState<
@@ -252,6 +259,7 @@ export default function StudentAssessmentPage({
   const [sortingCategoryResponses, setSortingCategoryResponses] =
     useState<SortingCategoryResponses>({});
   const [dragDropResponses, setDragDropResponses] = useState<Record<string, DragDropPlacements>>({});
+  const [dropdownResponses, setDropdownResponses] = useState<Record<string, DropdownResponses>>({});
   const [draggedSortingItem, setDraggedSortingItem] = useState<{
     questionId: string;
     itemId: string;
@@ -270,6 +278,8 @@ export default function StudentAssessmentPage({
   const [loading, setLoading] = useState(true);
   const [autosaveStatus, setAutosaveStatus] = useState<"idle" | "saving" | "saved" | "restored" | "error">("idle");
   const [activeQuestionIndex, setActiveQuestionIndex] = useState(0);
+  const [resourcesOpen, setResourcesOpen] = useState(false);
+  const [resourcePanelView, setResourcePanelView] = useState<StudentPanelView>("split");
   const [studentPanelView, setStudentPanelView] = useState<StudentPanelView>("split");
   const activeSecondsRef = useRef(0);
   const lockdownEndingRef = useRef(false);
@@ -289,10 +299,6 @@ export default function StudentAssessmentPage({
 
     getParams();
   }, [params, teacherPreview]);
-
-  useEffect(() => {
-    setStudentPanelView("split");
-  }, [activeQuestionIndex]);
 
   useEffect(() => {
     if (!assessment || accountRole !== "student" || teacherPreview || submitted || entryState?.studentStatus === "submitted") return;
@@ -396,21 +402,29 @@ export default function StudentAssessmentPage({
   async function loadQuestions(assessmentId: string, restoreStudentDraft = true) {
     if (questionsLoadedRef.current || questionsLoadingRef.current) return;
     questionsLoadingRef.current = true;
-    const { data: questionData, error: questionError } = await supabase.from("questions").select("*").eq("assessment_id", assessmentId).in("question_type", ["multiple-choice", "drag-and-drop"]).order("question_order", { ascending: true });
+    const { data: questionData, error: questionError } = await supabase.from("questions").select("*").eq("assessment_id", assessmentId).in("question_type", ["multiple-choice", "drag-and-drop", "sort-into-groups", "dropdown", "fill-in-the-blank"]).order("question_order", { ascending: true });
     if (questionError) {
       questionsLoadingRef.current = false;
       setQuestionsReady(true);
       alert(questionError.message);
       return;
     }
-    const typedQuestions = (questionData || []) as Question[];
-    const initialMultipleChoiceAnswers: Record<string, string> = {};
+    const { data: resourceAssessment } = await supabase.from("assessments").select("*").eq("id", assessmentId).single();
+    if (resourceAssessment) setAssessment(await hydratePrivateImageUrls(supabase, resourceAssessment));
+    let typedQuestions = (questionData || []) as Question[];
+    try {
+      typedQuestions = await hydratePrivateImageUrls(supabase, typedQuestions);
+    } catch (error) {
+      console.error("Could not authorize assessment images:", error);
+    }
+    const initialMultipleChoiceAnswers: Record<string, string[]> = {};
     const initialShortAnswerResponses: Record<string, ShortAnswerResponses> = {};
     const initialFillBlankResponses: Record<string, FillBlankResponses> = {};
     const initialImageOverlayResponses: Record<string, OverlayResponses> = {};
     const initialOrderResponses: SortingOrderResponses = {};
     const initialCategoryResponses: SortingCategoryResponses = {};
     const initialDragDropResponses: Record<string, DragDropPlacements> = {};
+    const initialDropdownResponses: Record<string, DropdownResponses> = {};
     typedQuestions.forEach((question) => {
       if (question.question_type === "sorting-order") initialOrderResponses[question.id] = shuffleArray(question.question_data.sortingItems?.map((item) => item.id) || []);
       if (question.question_type === "sorting-category") {
@@ -418,7 +432,9 @@ export default function StudentAssessmentPage({
         (question.question_data.sortingItems || []).forEach((item) => { assignments[item.id] = ""; });
         initialCategoryResponses[question.id] = assignments;
       }
-      if (question.question_type === "drag-and-drop") initialDragDropResponses[question.id] = Object.fromEntries(normalizeDragDropData(question.question_data.dragDrop).zones.map((zone) => [zone.id, []]));
+      if ((question.question_type === "drag-and-drop" || question.question_type === "sort-into-groups")) initialDragDropResponses[question.id] = Object.fromEntries(normalizeDragDropData(question.question_data.dragDrop).zones.map((zone) => [zone.id, []]));
+      if (question.question_type === "dropdown") initialDropdownResponses[question.id] = Object.fromEntries(normalizeDropdownData(question.question_data.dropdown).entries.map((entry) => [entry.id, ""]));
+      if (question.question_type === "fill-in-the-blank") initialFillBlankResponses[question.id] = Object.fromEntries(normalizeFillBlankData(question.question_data.fillBlank, question.question_data.template, question.question_data.blanks).blanks.map((blank) => [blank.id, ""]));
     });
 
     let savedDrafts: DraftAnswerRow[] = [];
@@ -435,8 +451,9 @@ export default function StudentAssessmentPage({
       const question = typedQuestions.find((candidate) => candidate.id === draft.question_id);
       if (!question) return;
       const saved = draft.answer_data;
-      if (question.question_type === "multiple-choice" && typeof saved.answer === "string") initialMultipleChoiceAnswers[question.id] = saved.answer;
-      if (question.question_type === "drag-and-drop" && saved.placements && typeof saved.placements === "object") initialDragDropResponses[question.id] = saved.placements as DragDropPlacements;
+      if (question.question_type === "multiple-choice") initialMultipleChoiceAnswers[question.id] = normalizeMultipleChoiceResponse(saved.answer, saved.selectedAnswers);
+      if ((question.question_type === "drag-and-drop" || question.question_type === "sort-into-groups") && saved.placements && typeof saved.placements === "object") initialDragDropResponses[question.id] = saved.placements as DragDropPlacements;
+      if (question.question_type === "dropdown" && saved.answers && typeof saved.answers === "object") initialDropdownResponses[question.id] = saved.answers as DropdownResponses;
       if (question.question_type === "short-answer" && saved.answers && typeof saved.answers === "object") initialShortAnswerResponses[question.id] = saved.answers as ShortAnswerResponses;
       if (question.question_type === "fill-in-the-blank" && saved.answers && typeof saved.answers === "object") initialFillBlankResponses[question.id] = saved.answers as FillBlankResponses;
       if (question.question_type === "image-question" && saved.answers && typeof saved.answers === "object") initialImageOverlayResponses[question.id] = saved.answers as OverlayResponses;
@@ -450,6 +467,7 @@ export default function StudentAssessmentPage({
     setFillBlankResponses(initialFillBlankResponses);
     setImageOverlayResponses(initialImageOverlayResponses);
     setDragDropResponses(initialDragDropResponses);
+    setDropdownResponses(initialDropdownResponses);
     setSortingOrderResponses(initialOrderResponses);
     setSortingCategoryResponses(initialCategoryResponses);
     savedDraftSignaturesRef.current = new Map(savedDrafts.map((draft) => [draft.question_id, JSON.stringify(draft.answer_data)]));
@@ -509,7 +527,7 @@ export default function StudentAssessmentPage({
     };
     // buildAnswerData reads the response states listed below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [assessment, teacherPreview, submitted, entryState?.studentStatus, questions, multipleChoiceAnswers, shortAnswerResponses, fillBlankResponses, imageOverlayResponses, sortingOrderResponses, sortingCategoryResponses, dragDropResponses]);
+  }, [assessment, teacherPreview, submitted, entryState?.studentStatus, questions, multipleChoiceAnswers, shortAnswerResponses, fillBlankResponses, imageOverlayResponses, sortingOrderResponses, sortingCategoryResponses, dragDropResponses, dropdownResponses]);
 
   async function persistDraftAnswers(assessmentId: string) {
     if (!autosaveReadyRef.current) return true;
@@ -596,10 +614,10 @@ export default function StudentAssessmentPage({
     });
   }, [questions]);
 
-  function selectMultipleChoiceAnswer(questionId: string, answer: string) {
+  function selectMultipleChoiceAnswer(question: Question, answer: string) {
     setMultipleChoiceAnswers((currentAnswers) => ({
       ...currentAnswers,
-      [questionId]: answer,
+      [question.id]: toggleMultipleChoiceAnswer(currentAnswers[question.id] || [], answer, getMultipleChoiceSelectionMode(question.question_data)),
     }));
   }
 
@@ -762,9 +780,10 @@ export default function StudentAssessmentPage({
 
   function questionIsAnswered(question: Question) {
     if (question.question_type === "multiple-choice") {
-      return Boolean(multipleChoiceAnswers[question.id]);
+      return (multipleChoiceAnswers[question.id] || []).length > 0;
     }
-    if (question.question_type === "drag-and-drop") return isDragDropAnswered(normalizeDragDropData(question.question_data.dragDrop), dragDropResponses[question.id] || {});
+    if ((question.question_type === "drag-and-drop" || question.question_type === "sort-into-groups")) return isDragDropAnswered(normalizeDragDropData(question.question_data.dragDrop), dragDropResponses[question.id] || {});
+    if (question.question_type === "dropdown") return dropdownIsAnswered(normalizeDropdownData(question.question_data.dropdown), dropdownResponses[question.id] || {});
 
     if (question.question_type === "short-answer") {
       const answerBoxes = question.question_data.answerBoxes || [];
@@ -776,10 +795,10 @@ export default function StudentAssessmentPage({
     }
 
     if (question.question_type === "fill-in-the-blank") {
-      const blanks = question.question_data.blanks || [];
-      const responses = fillBlankResponses[question.id] || {};
-
-      return blanks.every((blank) => Boolean(responses[blank.id]?.trim()));
+      return fillBlankIsAnswered(
+        normalizeFillBlankData(question.question_data.fillBlank, question.question_data.template, question.question_data.blanks),
+        fillBlankResponses[question.id] || {},
+      );
     }
 
     if (question.question_type === "sorting-order") {
@@ -811,12 +830,10 @@ export default function StudentAssessmentPage({
 
   function gradeQuestion(question: Question) {
     if (question.question_type === "multiple-choice") {
-      return (
-        multipleChoiceAnswers[question.id] ===
-        question.question_data.correctAnswer
-      );
+      return gradeMultipleChoice(question.question_data, multipleChoiceAnswers[question.id] || []);
     }
-    if (question.question_type === "drag-and-drop") return gradeDragDrop(normalizeDragDropData(question.question_data.dragDrop), dragDropResponses[question.id] || {}).isCorrect;
+    if ((question.question_type === "drag-and-drop" || question.question_type === "sort-into-groups")) return gradeDragDrop(normalizeDragDropData(question.question_data.dragDrop), dragDropResponses[question.id] || {}).isCorrect;
+    if (question.question_type === "dropdown") return gradeDropdown(normalizeDropdownData(question.question_data.dropdown), dropdownResponses[question.id] || {}).isCorrect;
 
     if (question.question_type === "short-answer") {
       const answerBoxes = question.question_data.answerBoxes || [];
@@ -830,14 +847,10 @@ export default function StudentAssessmentPage({
     }
 
     if (question.question_type === "fill-in-the-blank") {
-      const blanks = question.question_data.blanks || [];
-      const responses = fillBlankResponses[question.id] || {};
-
-      return blanks.every(
-        (blank) =>
-          normalizeAnswer(responses[blank.id]) ===
-          normalizeAnswer(blank.correctAnswer)
-      );
+      return gradeFillBlank(
+        normalizeFillBlankData(question.question_data.fillBlank, question.question_data.template, question.question_data.blanks),
+        fillBlankResponses[question.id] || {},
+      ).isCorrect;
     }
 
     if (question.question_type === "sorting-order") {
@@ -882,14 +895,22 @@ export default function StudentAssessmentPage({
 
   function buildAnswerData(question: Question) {
     if (question.question_type === "multiple-choice") {
+      const answers = multipleChoiceAnswers[question.id] || [];
       return {
-        answer: multipleChoiceAnswers[question.id],
+        answer: answers[0] || "",
+        selectedAnswers: answers,
+        isCorrect: gradeMultipleChoice(question.question_data, answers),
       };
     }
-    if (question.question_type === "drag-and-drop") {
+    if ((question.question_type === "drag-and-drop" || question.question_type === "sort-into-groups")) {
       const data = normalizeDragDropData(question.question_data.dragDrop);
       const placements = dragDropResponses[question.id] || {};
       return { placements, ...gradeDragDrop(data, placements) };
+    }
+    if (question.question_type === "dropdown") {
+      const data = normalizeDropdownData(question.question_data.dropdown);
+      const answers = dropdownResponses[question.id] || {};
+      return { answers, ...gradeDropdown(data, answers) };
     }
 
     if (question.question_type === "short-answer") {
@@ -910,20 +931,9 @@ export default function StudentAssessmentPage({
     }
 
     if (question.question_type === "fill-in-the-blank") {
-      const blanks = question.question_data.blanks || [];
-      const responses = fillBlankResponses[question.id] || {};
-      const blankResults: Record<string, boolean> = {};
-
-      blanks.forEach((blank) => {
-        blankResults[blank.id] =
-          normalizeAnswer(responses[blank.id]) ===
-          normalizeAnswer(blank.correctAnswer);
-      });
-
-      return {
-        answers: responses,
-        blankResults,
-      };
+      const data = normalizeFillBlankData(question.question_data.fillBlank, question.question_data.template, question.question_data.blanks);
+      const answers = fillBlankResponses[question.id] || {};
+      return { answers, ...gradeFillBlank(data, answers) };
     }
 
     if (question.question_type === "sorting-order") {
@@ -1155,7 +1165,9 @@ export default function StudentAssessmentPage({
 
   const answeredCount = questions.filter(questionIsAnswered).length;
   const dashboardHref = accountRole === "teacher" ? "/teacher" : "/student/dashboard";
-  const activeQuestionHasSplitView =
+  const showingResources = resourcesOpen && Boolean(assessment.formula_sheet);
+  const activePanelView = showingResources ? resourcePanelView : studentPanelView;
+  const activeQuestionHasSplitView = showingResources ||
     questions[activeQuestionIndex]?.question_data.layout === "split";
   const canSubmitAssessment =
     !teacherPreview && questions.length > 0 && studentName.trim().length > 0 && answeredCount === questions.length;
@@ -1182,92 +1194,28 @@ export default function StudentAssessmentPage({
           </div>
         </div>
       )}
-      <header className="border-b border-slate-200 bg-white">
-        <div className="flex min-h-20 items-center justify-between gap-6 px-5 py-4 lg:px-7">
-          <div className="min-w-0">
-            {teacherPreview ? <Link href={dashboardHref} className="text-xs font-semibold uppercase tracking-wider text-blue-600 hover:text-blue-700">Jretta</Link> : <span className="text-xs font-semibold uppercase tracking-wider text-blue-600">Jretta</span>}
-            <h1 className="mt-1 truncate text-xl font-bold">{assessment.title}</h1>
-          </div>
-          <div className="flex shrink-0 items-center gap-3">
-            {teacherPreview && <Link href={dashboardHref} className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-600 transition hover:border-slate-400 hover:bg-slate-50 hover:text-slate-900">Exit preview</Link>}
-            {teacherPreview && (
-              <span className="hidden rounded-full bg-blue-50 px-3 py-1.5 text-xs font-bold text-blue-700 ring-1 ring-blue-200 sm:inline-flex">
-                Teacher preview
-              </span>
-            )}
-            {!teacherPreview && <span role="status" className={`hidden text-xs font-semibold sm:inline ${autosaveStatus === "error" ? "text-red-600" : autosaveStatus === "saving" ? "text-blue-600" : "text-emerald-600"}`}>{autosaveStatus === "error" ? "Autosave failed" : autosaveStatus === "saving" ? "Saving…" : autosaveStatus === "restored" ? "Progress restored" : "Progress saved"}</span>}
-            {!teacherPreview && (
-              <label className="flex items-center gap-2" htmlFor="student-name">
-                <span className="hidden text-sm font-medium text-slate-500 sm:inline">Student</span>
-                <input
-                  id="student-name"
-                  className="w-36 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 sm:w-44 md:w-52"
-                  value={studentName}
-                  onChange={(event) => setStudentName(event.target.value)}
-                  placeholder="Your name"
-                  autoComplete="name"
-                />
-              </label>
-            )}
-          </div>
-        </div>
-      </header>
-
-      <div className="flex min-h-[calc(100vh-5rem)] flex-col lg:flex-row">
-        <aside className="shrink-0 border-b border-slate-200 bg-white lg:relative lg:w-16 lg:border-b-0 lg:border-r">
-          <div className="group/sidebar bg-white transition-[width,box-shadow] duration-200 lg:absolute lg:inset-y-0 lg:left-0 lg:z-40 lg:w-16 lg:overflow-hidden lg:border-r lg:border-slate-200 lg:hover:w-64 lg:hover:shadow-xl lg:focus-within:w-64 lg:focus-within:shadow-xl">
-          <div className="border-b border-slate-200 px-3 py-4">
-            <div className="hidden h-6 items-center justify-center text-xs font-bold text-blue-700 lg:flex lg:group-hover/sidebar:hidden lg:group-focus-within/sidebar:hidden">
-              {activeQuestionIndex + 1}/{questions.length}
-            </div>
-            <div className="flex items-center justify-between text-sm">
-              <span className="font-semibold text-slate-700 lg:opacity-0 lg:group-hover/sidebar:opacity-100 lg:group-focus-within/sidebar:opacity-100">Questions</span>
-              <span className="text-slate-500 lg:opacity-0 lg:group-hover/sidebar:opacity-100 lg:group-focus-within/sidebar:opacity-100">{answeredCount}/{questions.length}</span>
-            </div>
-            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100 lg:opacity-0 lg:group-hover/sidebar:opacity-100 lg:group-focus-within/sidebar:opacity-100">
-              <div
-                className="h-full rounded-full bg-blue-600 transition-all"
-                style={{ width: `${questions.length ? (answeredCount / questions.length) * 100 : 0}%` }}
-              />
-            </div>
-          </div>
-
-          <nav aria-label="Assessment questions" className="flex gap-2 overflow-x-auto p-3 lg:max-h-[calc(100vh-10rem)] lg:flex-col lg:overflow-x-hidden lg:overflow-y-auto">
-            {questions.map((question, index) => {
-              const answered = questionIsAnswered(question);
-              const active = index === activeQuestionIndex;
-
-              return (
-                <button
-                  key={question.id}
-                  type="button"
-                  onClick={() => setActiveQuestionIndex(index)}
-                  aria-current={active ? "step" : undefined}
-                  className={`flex shrink-0 items-center gap-3 rounded-lg px-1.5 py-2 text-left text-sm font-semibold transition lg:w-full lg:px-1.5 ${
-                    active
-                      ? "bg-blue-50 text-blue-700"
-                      : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-                  }`}
-                >
-                  <span className={`flex h-7 w-7 aspect-square shrink-0 items-center justify-center rounded-full border-2 text-[11px] ${
-                    answered
-                      ? "border-blue-600 bg-blue-600 text-white"
-                      : active
-                        ? "border-blue-600 text-blue-600"
-                        : "border-slate-300 text-slate-400"
-                  }`}>
-                    {answered ? "✓" : index + 1}
-                  </span>
-                  <span className="hidden whitespace-nowrap opacity-0 transition-opacity lg:inline lg:group-hover/sidebar:opacity-100 lg:group-focus-within/sidebar:opacity-100">Question {index + 1}</span>
-                </button>
-              );
-            })}
-          </nav>
-          </div>
-        </aside>
-
-        <div className="flex min-w-0 flex-1 flex-col">
-          <section className="flex-1 p-4 sm:p-6 lg:p-8">
+      <StudentAssessmentFrame
+        title={assessment.title}
+        questions={questions.map((question) => ({ id: question.id, answered: questionIsAnswered(question) }))}
+        activeIndex={activeQuestionIndex}
+        onNavigate={(index) => { setActiveQuestionIndex(index); setStudentPanelView("split"); setResourcePanelView("split"); }}
+        split={activeQuestionHasSplitView}
+        panelView={activePanelView}
+        onPanelViewChange={showingResources ? setResourcePanelView : setStudentPanelView}
+        hasFormulaSheet={Boolean(assessment.formula_sheet)}
+        resourcesOpen={showingResources}
+        onToggleResources={() => { if (!resourcesOpen) setResourcePanelView("split"); setResourcesOpen((open) => !open); }}
+        onSubmit={submitAssessment}
+        canSubmit={canSubmitAssessment}
+        submitDisabledReason={submitDisabledReason}
+        accountControls={<div className="space-y-2">
+          {teacherPreview ? <Link href={dashboardHref} className="text-blue-600 hover:underline">Exit teacher preview</Link> : <>
+            <label htmlFor="student-name" className="block"><span className="sr-only">Student name</span><input id="student-name" className="w-full rounded border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-700" value={studentName} onChange={(event) => setStudentName(event.target.value)} placeholder="Your name" autoComplete="name" /></label>
+            <p role="status" className={autosaveStatus === "error" ? "text-red-600" : "text-slate-500"}>{autosaveStatus === "error" ? "Autosave failed" : autosaveStatus === "saving" ? "Saving…" : autosaveStatus === "restored" ? "Progress restored" : "Progress saved"} · {answeredCount}/{questions.length}</p>
+          </>}
+        </div>}
+      >
+        <section id="student-question-content">
           {questions.map((question, index) => {
             if (index !== activeQuestionIndex) {
               return null;
@@ -1278,22 +1226,93 @@ export default function StudentAssessmentPage({
             const multipleChoiceHasImages = Boolean(
               question.question_data.choiceImages?.some((image) => image.imageUrl)
             );
+            const canvas = question.question_data.canvas ? normalizeQuestionCanvas(question.question_data.canvas) : null;
+            const unifiedDragDropCanvas = (question.question_type === "drag-and-drop" || question.question_type === "sort-into-groups")
+              ? asLocationDragDropData(question.question_data.dragDrop, canvas || undefined)
+              : null;
+            const leftCanvas = showingResources ? normalizeQuestionCanvas(assessment.formula_sheet) : question.question_data.layout === "split" && question.question_data.leftCanvas ? normalizeQuestionCanvas(question.question_data.leftCanvas) : null;
+            const interactionBounds = unifiedDragDropCanvas ? { x: 0, y: 0, width: 100, height: 100 } : canvas?.interaction;
+            const activeCanvasHeight = normalizeCanvasHeight(unifiedDragDropCanvas?.canvasHeight ?? canvas?.canvasHeight);
+            const leftCanvasHeight = normalizeCanvasHeight(leftCanvas?.canvasHeight ?? activeCanvasHeight);
+            const isSplitCanvas = showingResources || question.question_data.layout === "split";
+            const panelView = showingResources && !canvas ? "right" : activePanelView;
+            const renderedCanvasHeight = isSplitCanvas
+              ? panelView === "split"
+                ? Math.max(leftCanvasHeight, activeCanvasHeight) / 2
+                : panelView === "left"
+                  ? leftCanvasHeight
+                  : activeCanvasHeight
+              : activeCanvasHeight;
 
             return (
+              <div key={question.id} className={showingResources && !canvas && activePanelView === "split" ? "grid grid-cols-2 items-start" : ""}>
+                {showingResources && !canvas && activePanelView !== "right" && (
+                  <div role="region" aria-label="Formula sheet" className="min-w-0 overflow-hidden border-r border-slate-200 bg-white">
+                    <QuestionCanvas canvas={normalizeQuestionCanvas(assessment.formula_sheet)} />
+                  </div>
+                )}
               <div
                 key={question.id}
-                className={`grid min-h-[calc(100vh-15rem)] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm ${
-                  question.question_data.layout === "split" && studentPanelView === "split"
+                style={canvas ? { aspectRatio: `100 / ${renderedCanvasHeight}` } : undefined}
+                className={`${showingResources && !canvas && activePanelView === "left" ? "hidden" : ""} ${canvas ? "relative w-full min-h-0" : "grid min-h-[calc(100vh-15rem)]"} overflow-hidden bg-white ${
+                  isSplitCanvas && panelView === "split"
                     ? "grid-cols-2"
                     : "grid-cols-1"
                 }`}
               >
-                {(question.question_data.layout !== "split" || studentPanelView !== "right") && (
-                <div className={`min-w-0 bg-slate-50/70 p-4 sm:p-6 lg:p-8 ${question.question_data.layout === "split" && studentPanelView === "split" ? "border-r border-slate-200" : "border-b border-slate-200"}`}>
-                  <p className="text-sm font-semibold uppercase tracking-wider text-blue-600">
-                    Question {index + 1} of {questions.length}
-                  </p>
-                  {question.question_data.layout === "split" ? (
+                {canvas && isSplitCanvas && panelView !== "right" && (
+                  <div role="region" aria-label={showingResources ? "Formula sheet" : "Question reference"} className={`absolute left-0 top-0 z-10 overflow-hidden border-r border-slate-200 ${panelView === "split" ? "w-1/2" : "w-full"}`} style={{ containerType: "inline-size", aspectRatio: `100 / ${leftCanvasHeight}` }}>
+                    {leftCanvas ? <QuestionCanvas canvas={leftCanvas} className="pointer-events-none absolute inset-0 h-full w-full border-0" /> : <StudentReferencePanel data={question.question_data} compact />}
+                  </div>
+                )}
+                <div
+                  style={canvas ? { containerType: "inline-size", aspectRatio: `100 / ${activeCanvasHeight}` } : undefined}
+                  className={canvas
+                    ? isSplitCanvas
+                      ? panelView === "left"
+                        ? "hidden"
+                        : panelView === "split"
+                          ? "absolute right-0 top-0 w-1/2 overflow-hidden"
+                          : "absolute inset-x-0 top-0 w-full overflow-hidden"
+                      : "absolute inset-x-0 top-0 w-full overflow-hidden"
+                    : "contents"}
+                >
+                {canvas && !unifiedDragDropCanvas && <QuestionCanvas canvas={canvas} className="pointer-events-none absolute inset-0 h-full w-full border-0" />}
+                {canvas && question.question_type === "dropdown" && (() => {
+                  const data = normalizeDropdownData(question.question_data.dropdown);
+                  return data.entries.map((entry, entryIndex) => {
+                    const bounds = dropdownEntryBounds(entry, entryIndex);
+                    return <div key={entry.id} className="absolute z-20" style={{ left: `${bounds.x}%`, top: `${bounds.y}%`, width: `${bounds.width}%`, height: `${bounds.height}%` }}>
+                      <CanvasDropdownField ariaLabel={`Dropdown ${entryIndex + 1}`} options={getDropdownEntryOptions(entry)} value={dropdownResponses[question.id]?.[entry.id] || ""} onChange={(value) => setDropdownResponses((current) => ({ ...current, [question.id]: { ...(current[question.id] || {}), [entry.id]: value } }))} />
+                    </div>;
+                  });
+                })()}
+                {canvas && question.question_type === "fill-in-the-blank" && (() => {
+                  const data = normalizeFillBlankData(question.question_data.fillBlank, question.question_data.template, question.question_data.blanks);
+                  return data.blanks.map((blank, blankIndex) => {
+                    const bounds = getFillBlankBounds(blank, blankIndex);
+                    return <div key={blank.id} className="absolute z-20" style={{ left: `${bounds.x}%`, top: `${bounds.y}%`, width: `${bounds.width}%`, height: `${bounds.height}%` }}><CanvasFillBlankField blank={blank} value={fillBlankResponses[question.id]?.[blank.id] || ""} onChange={(value) => updateFillBlankResponse(question.id, blank.id, value)} /></div>;
+                  });
+                })()}
+                {canvas && question.question_type === "multiple-choice" && (() => {
+                  const choices = question.question_data.choices || [];
+                  const selectionMode = getMultipleChoiceSelectionMode(question.question_data);
+                  const savedLayout = canvas.choiceLayout || { grouped: true, direction: "vertical" as const, presentation: "content" as const, x: 8, y: 35, positions: [] };
+                  const layout = selectionMode === "multiple" ? { ...savedLayout, presentation: "content" as const } : savedLayout;
+                  const contentSizes = getChoiceContentSizes(choices.map((content, index) => ({ id: String(index), content, html: question.question_data.choiceHtml?.[index], imageUrl: question.question_data.choiceImages?.[index]?.imageUrl, ...layout.positions[index] })), { sameSize: layout.sameSize, canvasHeight: canvas.canvasHeight, selectionMode });
+                  const option = (choice: string, choiceIndex: number, fillsWrapper = false) => {
+                    const choiceValue = getMultipleChoiceValue(choice, choiceIndex);
+                    const selected = (multipleChoiceAnswers[question.id] || []).includes(choiceValue);
+                    return <button key={choiceIndex} type="button" role={selectionMode === "multiple" ? "checkbox" : "radio"} aria-label={choice || `Choice ${choiceIndex + 1}`} aria-checked={selected} onClick={() => selectMultipleChoiceAnswer(question, choiceValue)} style={fillsWrapper ? { width: "100%", height: "100%" } : layout.presentation === "content" ? { paddingTop: "1cqw", paddingBottom: "1cqw", paddingRight: "1.2cqw", paddingLeft: selectionMode === "multiple" ? "4cqw" : "1.2cqw", fontSize: "1.7cqw", width: `${contentSizes[choiceIndex].width}cqw`, height: `${contentSizes[choiceIndex].height}cqw` } : layout.presentation === "radio" ? { width: "3.2cqw", height: "3.2cqw" } : { width: `${layout.positions[choiceIndex]?.width ?? 6}cqw`, height: `${(layout.positions[choiceIndex]?.height ?? 10.5) * 9 / 16}cqw` }} className={`relative box-border flex shrink-0 flex-col ${layout.presentation === "content" ? "items-start text-left" : "items-center text-center"} whitespace-nowrap ${layout.positions[choiceIndex]?.textVerticalAlign === "top" ? "justify-start" : layout.positions[choiceIndex]?.textVerticalAlign === "bottom" ? "justify-end" : "justify-center"} border bg-white/50 font-medium text-black shadow-sm transition hover:border-blue-600 ${layout.presentation === "radio" ? "rounded-full border-2" : "rounded"} ${selected ? "border-blue-600 ring-2 ring-blue-300" : "border-slate-400"}`}>
+                      {layout.presentation === "radio" && selected && <span className="h-[1.5cqw] w-[1.5cqw] rounded-full bg-blue-600" />}
+                      {layout.presentation === "content" && <>{selectionMode === "multiple" && <span className={`absolute left-[0.8cqw] top-1/2 inline-flex h-[1.5cqw] w-[1.5cqw] -translate-y-1/2 items-center justify-center rounded-sm border text-[1.1cqw] font-bold leading-none ${selected ? "border-blue-600 bg-blue-600 text-white" : "border-slate-500 bg-white"}`}>{selected ? "✓" : ""}</span>}{question.question_data.choiceImages?.[choiceIndex]?.imageUrl && <img src={question.question_data.choiceImages[choiceIndex].imageUrl} alt="" style={{ maxHeight: "10cqw", maxWidth: "14cqw", marginBottom: "0.5cqw" }} className="min-h-0 flex-1 object-contain" />}<span className="w-full">{question.question_data.choiceHtml?.[choiceIndex] ? <span className="rich-text-content inline" dangerouslySetInnerHTML={{ __html: question.question_data.choiceHtml[choiceIndex] }} /> : choice}</span></>}
+                    </button>;
+                  };
+                  return layout.grouped ? <div className={`absolute z-20 flex w-max ${layout.direction === "vertical" ? "flex-col" : "flex-row"}`} style={{ left: `${layout.x}%`, top: `${layout.y}%`, gap: "0.8cqw" }}>{choices.map((choice, choiceIndex) => option(choice, choiceIndex))}</div> : <>{choices.map((choice, choiceIndex) => <div key={choiceIndex} className="absolute z-20" style={{ left: `${layout.positions[choiceIndex]?.x ?? 8}%`, top: `${layout.positions[choiceIndex]?.y ?? 35 + choiceIndex * 12}%`, ...(layout.presentation === "box" ? { width: `${layout.positions[choiceIndex]?.width ?? 6}%`, height: `${layout.positions[choiceIndex]?.height ?? 10.5}%` } : {}) }}>{option(choice, choiceIndex, layout.presentation === "box")}</div>)}</>;
+                })()}
+                {(!canvas || Boolean(canvas.legacyPrompt)) && (canvas || question.question_data.layout !== "split" || panelView !== "right") && (
+                <div style={canvas?.legacyPrompt ? { position: "absolute", left: `${canvas.legacyPrompt.x}%`, top: `${canvas.legacyPrompt.y}%`, width: `${canvas.legacyPrompt.width}%`, height: `${canvas.legacyPrompt.height}%`, overflow: "auto", background: "transparent", padding: 0 } : undefined} className={`min-w-0 bg-slate-50/70 p-4 sm:p-6 lg:p-8 ${question.question_data.layout === "split" && panelView === "split" ? "border-r border-slate-200" : "border-b border-slate-200"}`}>
+                  {!canvas && question.question_data.layout === "split" ? (
                     <div className="mt-5">
                       <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
                         Reference material
@@ -1376,12 +1395,12 @@ export default function StudentAssessmentPage({
                         {question.prompt}
                       </h2>
                     )
-                  ) : (
-                    <p className="mt-5 text-sm leading-6 text-slate-500">
-                      Complete the statement by filling in each blank.
-                    </p>
-                  )}
-                  {assessment.description && index === 0 && (
+                  ) : canvas ? (
+                    <div className="text-[2cqw] font-semibold leading-snug text-slate-950">
+                      Complete each blank.
+                    </div>
+                  ) : null}
+                  {!canvas && assessment.description && index === 0 && (
                     <div className="mt-8 rounded-xl border border-slate-200 bg-white p-4 text-sm leading-6 text-slate-600">
                       <span className="font-semibold text-slate-800">Instructions: </span>
                       {assessment.description}
@@ -1394,10 +1413,9 @@ export default function StudentAssessmentPage({
                 </div>
                 )}
 
-                {(question.question_data.layout !== "split" || studentPanelView !== "left") && (
-                <div className="min-w-0 p-4 text-slate-900 sm:p-6 lg:p-8">
-                {question.question_data.layout === "split" &&
-                  question.question_type !== "fill-in-the-blank" && (
+                {(canvas ? Boolean(interactionBounds) : question.question_data.layout !== "split" || panelView !== "left") && (
+                <div style={interactionBounds ? { position: "absolute", left: `${interactionBounds.x}%`, top: `${interactionBounds.y}%`, width: `${interactionBounds.width}%`, height: `${interactionBounds.height}%`, overflow: "auto", padding: 0 } : undefined} className={`min-w-0 text-slate-900 ${unifiedDragDropCanvas ? "p-0" : "p-4 sm:p-6 lg:p-8"}`}>
+                {!canvas && question.question_data.layout === "split" && question.question_type !== "fill-in-the-blank" && (
                     <div className="border-b border-slate-200 pb-6">
                       <p className="text-xs font-semibold uppercase tracking-wider text-blue-600">
                         Your question
@@ -1413,32 +1431,37 @@ export default function StudentAssessmentPage({
                   )}
 
                 {question.question_type === "multiple-choice" && (
-                  question.question_data.choiceTable?.enabled ? (
+                  <div>
+                  {getMultipleChoiceSelectionMode(question.question_data) === "multiple" && <p className="mt-5 text-sm font-semibold text-slate-600">Select all answers that apply.</p>}
+                  {question.question_data.choiceTable?.enabled ? (
                   <div className="mt-6 overflow-x-auto">
                     <table className={`w-full border-collapse text-left ${question.question_data.choiceTable.hasBorder ? "border border-slate-300" : ""}`}>
                       <thead><tr><th className={`w-16 px-3 py-3 text-center ${question.question_data.choiceTable.hasBorder ? "border border-slate-300" : ""}`}>Row</th>{question.question_data.choiceTable.headers.map((header, headerIndex) => <th key={headerIndex} className={`px-4 py-3 font-semibold ${question.question_data.choiceTable?.hasBorder ? "border border-slate-300" : ""}`}>{header}</th>)}</tr></thead>
-                      <tbody>{question.question_data.choiceTable.rows.map((row, rowIndex) => { const choiceValue = getMultipleChoiceValue(question.question_data.choices?.[rowIndex] || "", rowIndex); const selected = multipleChoiceAnswers[question.id] === choiceValue; return <tr key={rowIndex} role="radio" aria-checked={selected} tabIndex={0} onClick={() => selectMultipleChoiceAnswer(question.id, choiceValue)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectMultipleChoiceAnswer(question.id, choiceValue); } }} className={`cursor-pointer text-black outline-none transition focus:ring-2 focus:ring-inset focus:ring-blue-500 ${selected ? "bg-blue-100" : "hover:bg-blue-50/60"}`}><td className={`px-3 py-3 text-center ${question.question_data.choiceTable?.hasBorder ? "border border-slate-300" : ""}`}><span className={`inline-flex h-6 w-6 items-center justify-center rounded-full border-2 ${selected ? "border-blue-600" : "border-slate-500"}`}>{selected && <span className="h-3 w-3 rounded-full bg-blue-600" />}</span></td>{row.map((cell, cellIndex) => <td key={cellIndex} className={`px-4 py-3 ${question.question_data.choiceTable?.hasBorder ? "border border-slate-300" : ""}`}>{question.question_data.choiceTable?.cellImages?.[rowIndex]?.[cellIndex]?.imageUrl && <img src={question.question_data.choiceTable.cellImages[rowIndex][cellIndex].imageUrl} alt="" className="mx-auto mb-2 max-h-40 max-w-full object-contain" />}<div className="rich-text-content" dangerouslySetInnerHTML={{ __html: cell }} /></td>)}</tr>; })}</tbody>
+                      <tbody>{question.question_data.choiceTable.rows.map((row, rowIndex) => { const choiceValue = getMultipleChoiceValue(question.question_data.choices?.[rowIndex] || "", rowIndex); const selectionMode = getMultipleChoiceSelectionMode(question.question_data); const selected = (multipleChoiceAnswers[question.id] || []).includes(choiceValue); return <tr key={rowIndex} role={selectionMode === "multiple" ? "checkbox" : "radio"} aria-checked={selected} tabIndex={0} onClick={() => selectMultipleChoiceAnswer(question, choiceValue)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectMultipleChoiceAnswer(question, choiceValue); } }} className={`cursor-pointer text-black outline-none transition focus:ring-2 focus:ring-inset focus:ring-blue-500 ${selected ? "bg-blue-100" : "hover:bg-blue-50/60"}`}><td className={`px-3 py-3 text-center ${question.question_data.choiceTable?.hasBorder ? "border border-slate-300" : ""}`}><span className={`inline-flex h-6 w-6 items-center justify-center border-2 ${selectionMode === "multiple" ? "rounded" : "rounded-full"} ${selected ? "border-blue-600 bg-blue-600" : "border-slate-500"}`}>{selected && (selectionMode === "multiple" ? <span className="text-sm font-bold leading-none text-white">✓</span> : <span className="h-3 w-3 rounded-full bg-blue-600 ring-2 ring-white" />)}</span></td>{row.map((cell, cellIndex) => <td key={cellIndex} className={`px-4 py-3 ${question.question_data.choiceTable?.hasBorder ? "border border-slate-300" : ""}`}>{question.question_data.choiceTable?.cellImages?.[rowIndex]?.[cellIndex]?.imageUrl && <img src={question.question_data.choiceTable.cellImages[rowIndex][cellIndex].imageUrl} alt="" className="mx-auto mb-2 max-h-40 max-w-full object-contain" />}<div className="rich-text-content" dangerouslySetInnerHTML={{ __html: cell }} /></td>)}</tr>; })}</tbody>
                     </table>
                   </div>
                   ) : (
                   <div className={`mt-6 grid w-fit max-w-full ${multipleChoiceHasImages ? "grid-cols-1 gap-4 sm:grid-cols-2" : "grid-cols-[fit-content(32rem)] gap-3"}`}>
                     {question.question_data.choices?.map((choice, choiceIndex) => {
                       const choiceValue = getMultipleChoiceValue(choice, choiceIndex);
-                      const selected =
-                        multipleChoiceAnswers[question.id] === choiceValue;
+                      const selectionMode = getMultipleChoiceSelectionMode(question.question_data);
+                      const selected = (multipleChoiceAnswers[question.id] || []).includes(choiceValue);
 
                       return (
                         <button
                           key={choiceIndex}
+                          type="button"
+                          aria-pressed={selected}
                           onClick={() =>
-                            selectMultipleChoiceAnswer(question.id, choiceValue)
+                            selectMultipleChoiceAnswer(question, choiceValue)
                           }
                           className={
                             selected
-                              ? `w-full rounded-xl border-2 border-blue-600 bg-blue-50 text-left font-semibold text-black ${multipleChoiceHasImages ? "max-w-[22rem] p-4" : "max-w-full px-5 py-3"}`
-                              : `w-full rounded-xl border-2 border-slate-200 bg-white text-left text-black hover:border-blue-300 hover:bg-blue-50/40 ${multipleChoiceHasImages ? "max-w-[22rem] p-4" : "max-w-full px-5 py-3"}`
+                              ? `w-full rounded-xl border-2 border-blue-600 bg-blue-50/50 text-left font-semibold text-black ${multipleChoiceHasImages ? "max-w-[22rem] p-4" : "max-w-full px-5 py-3"}`
+                              : `w-full rounded-xl border-2 border-slate-200 bg-white/50 text-left text-black hover:border-blue-300 hover:bg-blue-50/40 ${multipleChoiceHasImages ? "max-w-[22rem] p-4" : "max-w-full px-5 py-3"}`
                           }
                         >
+                          {selectionMode === "multiple" && <span className={`mr-3 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded border-2 align-middle ${selected ? "border-blue-600 bg-blue-600" : "border-slate-500"}`}>{selected && <span className="text-sm font-bold leading-none text-white">✓</span>}</span>}
                           {question.question_data.choiceImages?.[choiceIndex]
                             ?.imageUrl && (
                             <img
@@ -1455,12 +1478,13 @@ export default function StudentAssessmentPage({
                       );
                     })}
                   </div>
-                  )
+                  )}
+                  </div>
                 )}
 
-                {question.question_type === "drag-and-drop" && (
+                {(question.question_type === "drag-and-drop" || question.question_type === "sort-into-groups") && (
                   <DragDropQuestion
-                    data={normalizeDragDropData(question.question_data.dragDrop)}
+                    data={unifiedDragDropCanvas || normalizeDragDropData(question.question_data.dragDrop)}
                     placements={dragDropResponses[question.id] || {}}
                     onChange={(placements) =>
                       setDragDropResponses((current) => ({
@@ -1470,6 +1494,14 @@ export default function StudentAssessmentPage({
                     }
                   />
                 )}
+
+                {question.question_type === "dropdown" && !canvas && (() => {
+                  const data = normalizeDropdownData(question.question_data.dropdown);
+                  const answerSelect = (entry: DropdownQuestionData["entries"][number], entryIndex: number) => (
+                    <span key={entry.id} className="mx-1 inline-block h-12 w-36 align-middle"><CanvasDropdownField ariaLabel={`Dropdown ${entryIndex + 1}`} options={getDropdownEntryOptions(entry)} value={dropdownResponses[question.id]?.[entry.id] || ""} onChange={(value) => setDropdownResponses((current) => ({ ...current, [question.id]: { ...(current[question.id] || {}), [entry.id]: value } }))} /></span>
+                  );
+                  return data.layout === "table" ? <div className="mt-6 overflow-x-auto"><table className="w-full border-collapse text-left"><tbody>{data.entries.map((entry, entryIndex) => <tr key={entry.id}><td className="border border-slate-300 px-4 py-3 text-slate-900">{entry.label}</td><td className="w-56 border border-slate-300 p-2 text-center">{answerSelect(entry, entryIndex)}</td></tr>)}</tbody></table></div> : <div className="mt-6 text-lg leading-[3.6rem] text-slate-950">{getDropdownSegments(data.template).map((segment, segmentIndex) => segment.type === "text" ? <span key={segmentIndex} className="whitespace-pre-wrap">{segment.content}</span> : data.entries[segment.index] ? answerSelect(data.entries[segment.index], segment.index) : null)}</div>;
+                })()}
 
                 {question.question_type === "short-answer" && (
                   <div className="mt-6 space-y-4">
@@ -1481,7 +1513,7 @@ export default function StudentAssessmentPage({
                           </label>
 
                           <input
-                            className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                            className="mt-1 w-full rounded-xl border border-slate-300 bg-white/50 px-4 py-3 text-slate-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                             value={
                               shortAnswerResponses[question.id]?.[
                                 answerBox.id
@@ -1503,39 +1535,12 @@ export default function StudentAssessmentPage({
                 )}
 
                 {question.question_type === "fill-in-the-blank" && (
-                  <div className="mt-3 text-2xl font-semibold leading-loose">
-                    {parseFillInBlankTemplate(
-                      question.question_data.template || question.prompt
-                    ).map((part, partIndex) => {
-                      if (part.type === "text") {
-                        return <span key={partIndex}>{part.value}</span>;
-                      }
-
-                      const blank =
-                        question.question_data.blanks?.[part.blankIndex || 0];
-
-                      if (!blank) {
-                        return null;
-                      }
-
-                      return (
-                        <input
-                          key={partIndex}
-                          className="mx-2 inline-block w-32 rounded-lg border border-slate-300 bg-white px-3 py-2 text-base text-slate-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                          value={
-                            fillBlankResponses[question.id]?.[blank.id] || ""
-                          }
-                          onChange={(event) =>
-                            updateFillBlankResponse(
-                              question.id,
-                              blank.id,
-                              event.target.value
-                            )
-                          }
-                          placeholder="answer"
-                        />
-                      );
-                    })}
+                  <div className="mt-6">
+                    <FillBlankQuestion
+                      data={normalizeFillBlankData(question.question_data.fillBlank, question.question_data.template, question.question_data.blanks)}
+                      answers={fillBlankResponses[question.id] || {}}
+                      onAnswer={(blankId, value) => updateFillBlankResponse(question.id, blankId, value)}
+                    />
                   </div>
                 )}
 
@@ -1896,86 +1901,16 @@ export default function StudentAssessmentPage({
                     )}
                   </div>
                 )}
-              </div>
+                </div>
               )}
+                </div>
+              </div>
               </div>
             );
           })}
         </section>
 
-          <footer className="sticky bottom-0 z-50 flex items-center justify-between gap-4 border-t border-slate-200 bg-white/95 px-4 py-4 shadow-[0_-8px_24px_rgba(15,23,42,0.06)] backdrop-blur sm:px-6 lg:px-8">
-            <button
-              type="button"
-              onClick={() => setActiveQuestionIndex((current) => Math.max(0, current - 1))}
-              disabled={activeQuestionIndex === 0}
-              className="inline-flex items-center gap-2 rounded-xl border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <span aria-hidden="true">←</span> Previous
-            </button>
-
-            <div className="group relative flex items-center rounded-xl border border-slate-300 bg-slate-100 p-1 shadow-sm">
-              {(["left", "split", "right"] as StudentPanelView[]).map((view) => (
-                <button
-                  key={view}
-                  type="button"
-                  disabled={!activeQuestionHasSplitView}
-                  onClick={() => setStudentPanelView(view)}
-                  aria-pressed={activeQuestionHasSplitView && studentPanelView === view}
-                  className={`rounded-lg px-3 py-2 text-xs font-semibold capitalize transition sm:px-4 sm:text-sm ${
-                    activeQuestionHasSplitView && studentPanelView === view
-                      ? "bg-blue-600 text-white shadow-sm"
-                      : activeQuestionHasSplitView
-                        ? "bg-transparent text-slate-600 hover:bg-white hover:text-slate-900"
-                        : "cursor-not-allowed text-slate-400"
-                  }`}
-                >
-                  {view === "split" && <span className="mr-1.5" aria-hidden="true">▣</span>}
-                  {view}
-                </button>
-              ))}
-              {!activeQuestionHasSplitView && (
-                <span role="tooltip" className="pointer-events-none absolute bottom-full left-1/2 z-30 mb-2 w-max max-w-64 -translate-x-1/2 translate-y-1 rounded-lg bg-slate-900 px-3 py-2 text-center text-xs font-medium leading-5 text-white opacity-0 shadow-lg transition duration-100 group-hover:translate-y-0 group-hover:opacity-100">
-                  This question does not have a split view.
-                  <span className="absolute left-1/2 top-full h-0 w-0 -translate-x-1/2 border-x-4 border-t-4 border-x-transparent border-t-slate-900" />
-                </span>
-              )}
-            </div>
-
-            {activeQuestionIndex < questions.length - 1 ? (
-              <button
-                type="button"
-                onClick={() => setActiveQuestionIndex((current) => Math.min(questions.length - 1, current + 1))}
-                className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800"
-              >
-                Next <span aria-hidden="true">→</span>
-              </button>
-            ) : (
-              <span className="group relative inline-flex">
-                <button
-                  type="button"
-                  onClick={submitAssessment}
-                  disabled={!canSubmitAssessment}
-                  aria-disabled={!canSubmitAssessment}
-                  aria-describedby={!canSubmitAssessment ? "submit-disabled-reason" : undefined}
-                  className="rounded-xl bg-emerald-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none disabled:hover:bg-slate-200"
-                >
-                  Submit Assessment
-                </button>
-                {!canSubmitAssessment && (
-                  <span
-                    id="submit-disabled-reason"
-                    role="tooltip"
-                    className="pointer-events-none absolute bottom-full right-0 z-20 mb-2 w-max max-w-72 translate-y-1 rounded-lg bg-slate-900 px-3 py-2 text-left text-xs font-medium leading-5 text-white opacity-0 shadow-lg transition duration-100 group-hover:translate-y-0 group-hover:opacity-100"
-                  >
-                    {submitDisabledReason}
-                    <span className="absolute right-5 top-full h-0 w-0 border-x-4 border-t-4 border-x-transparent border-t-slate-900" />
-                  </span>
-                )}
-              </span>
-            )}
-          </footer>
-        </div>
-      </div>
+      </StudentAssessmentFrame>
     </main>
   );
 }

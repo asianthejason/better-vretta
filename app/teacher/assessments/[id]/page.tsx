@@ -1,5 +1,7 @@
 "use client";
 
+import DragDropQuestion from "@/app/student/[id]/DragDropQuestion";
+
 import {
   useEffect,
   useMemo,
@@ -13,12 +15,27 @@ import LocationCanvasElementContent from "@/app/components/LocationCanvasElement
 import { supabase } from "@/lib/supabaseClient";
 import { requireAccountRole } from "@/lib/roleGuard";
 import RichTextEditor from "./RichTextEditor";
-import DragDropEditor, { DragDropPresetPicker } from "./DragDropEditor";
-import { createDefaultDragDropData, getLocationBoxSize, getSequenceTargetCount, normalizeDragDropData, type DragDropData } from "@/lib/dragDrop";
+import { useQuestionDrafts } from "./useQuestionDrafts";
+import type { QuestionDraft } from "@/lib/questionDrafts";
+import { DropdownQuestionPreview } from "./DropdownQuestionEditor";
+import FillBlankQuestion from "@/app/components/FillBlankQuestion";
+import CanvasFillBlankField from "@/app/components/CanvasFillBlankField";
+import FillBlankCanvasPanel from "./FillBlankCanvasPanel";
+import QuestionCanvas from "@/app/components/QuestionCanvas";
+import CanvasDropdownField from "@/app/components/CanvasDropdownField";
+import LocationCanvasEditor from "./LocationCanvasEditor";
+import { createDefaultDropdownData, dropdownHasCompleteAnswerKey, getDropdownEntryOptions, makeDropdownId, normalizeDropdownData, type DropdownEntry, type DropdownQuestionData } from "@/lib/dropdownQuestion";
+import { createDefaultFillBlankData, createFillBlankEntry, getFillBlankBounds, getFillBlankPromptText, normalizeFillBlankData, type FillBlankData, type FillBlankEntry } from "@/lib/fillBlank";
+import { createCategoryCanvasData, asLocationDragDropData, createDefaultDragDropData, createLocationDragDropData, getInlineBlankCount, getInlineBlankSegments, getInlineChoiceBoxSize, getDragDropItemHtml, getLocationBoxSize, getSequenceTargetCount, makeDragDropId, normalizeCanvasHeight, normalizeDragDropData, type DragDropData } from "@/lib/dragDrop";
+import { getMultipleChoiceCorrectAnswers, getMultipleChoiceSelectionMode, type MultipleChoiceSelectionMode } from "@/lib/multipleChoice";
+import { DEFAULT_INTERACTION, createDefaultQuestionCanvas, normalizeQuestionCanvas, questionCanvasToComposition, type QuestionCanvasData } from "@/lib/questionCanvas";
+import { createPrivateImageUrl, hydratePrivateImageUrls } from "@/lib/privateImageUrls";
 
 type QuestionType =
   | "multiple-choice"
   | "drag-and-drop"
+  | "sort-into-groups"
+  | "dropdown"
   | "short-answer"
   | "fill-in-the-blank"
   | "image-question"
@@ -97,6 +114,7 @@ type Assessment = {
   title: string;
   description: string | null;
   is_published: boolean;
+  formula_sheet?: QuestionCanvasData | null;
 };
 
 type ReferenceBuild = {
@@ -129,8 +147,11 @@ type Question = {
     promptHtml?: string;
     choiceImages?: MultipleChoiceImage[];
     choiceHtml?: string[];
+    choiceIds?: string[];
     choiceTable?: ChoiceTable;
+    selectionMode?: MultipleChoiceSelectionMode;
     correctAnswer?: string;
+    correctAnswers?: string[];
     answerBoxes?: AnswerBox[];
     template?: string;
     blanks?: BlankBox[];
@@ -151,6 +172,10 @@ type Question = {
     leftPanelImagePath?: string;
     leftPanelTable?: LeftPanelTable;
     dragDrop?: DragDropData;
+    dropdown?: DropdownQuestionData;
+    fillBlank?: FillBlankData;
+    canvas?: QuestionCanvasData;
+    leftCanvas?: QuestionCanvasData;
   };
   question_order: number;
 };
@@ -229,19 +254,6 @@ function createSortingCategory(name = ""): SortingCategory {
   };
 }
 
-function extractBlanksFromTemplate(template: string): BlankBox[] {
-  const matches = [...template.matchAll(/\[\[(.*?)\]\]/g)];
-
-  return matches.map((match, index) => ({
-    id: `blank-${index + 1}`,
-    correctAnswer: match[1].trim(),
-  }));
-}
-
-function makeStudentPreview(template: string) {
-  return template.replace(/\[\[(.*?)\]\]/g, "[ answer box ]");
-}
-
 function getImageChoiceValue(index: number) {
   return `__image_choice_${index + 1}__`;
 }
@@ -311,8 +323,30 @@ function leftPanelTableHasContent(table: LeftPanelTable | undefined) {
   );
 }
 
-function ChoiceTablePreview({ table }: { table: ChoiceTable }) {
-  return <div className="mt-6 overflow-x-auto"><table className={`w-full border-collapse text-left ${table.hasBorder ? "border border-slate-300" : ""}`}><thead><tr><th className={`w-16 px-3 py-3 text-center ${table.hasBorder ? "border border-slate-300" : ""}`}>Row</th>{table.headers.map((header, index) => <th key={index} className={`px-4 py-3 font-semibold ${table.hasBorder ? "border border-slate-300" : ""}`}>{header}</th>)}</tr></thead><tbody>{table.rows.map((row, rowIndex) => <tr key={rowIndex} className="hover:bg-blue-50/50"><td className={`px-3 py-3 text-center ${table.hasBorder ? "border border-slate-300" : ""}`}><span className="inline-block h-6 w-6 rounded-full border-2 border-slate-500" /></td>{row.map((cell, cellIndex) => <td key={cellIndex} className={`px-4 py-3 ${table.hasBorder ? "border border-slate-300" : ""}`}>{table.cellImages?.[rowIndex]?.[cellIndex]?.imageUrl && <img src={table.cellImages[rowIndex][cellIndex].imageUrl} alt="" className="mx-auto mb-2 max-h-40 max-w-full object-contain" />}<div className="rich-text-content" dangerouslySetInnerHTML={{ __html: cell }} /></td>)}</tr>)}</tbody></table></div>;
+function ChoiceTablePreview({ table, selectionMode = "single" }: { table: ChoiceTable; selectionMode?: MultipleChoiceSelectionMode }) {
+  return <div className="mt-6 overflow-x-auto"><table className={`w-full border-collapse text-left ${table.hasBorder ? "border border-slate-300" : ""}`}><thead><tr><th className={`w-16 px-3 py-3 text-center ${table.hasBorder ? "border border-slate-300" : ""}`}>Row</th>{table.headers.map((header, index) => <th key={index} className={`px-4 py-3 font-semibold ${table.hasBorder ? "border border-slate-300" : ""}`}>{header}</th>)}</tr></thead><tbody>{table.rows.map((row, rowIndex) => <tr key={rowIndex} className="hover:bg-blue-50/50"><td className={`px-3 py-3 text-center ${table.hasBorder ? "border border-slate-300" : ""}`}><span className={`inline-block h-6 w-6 border-2 border-slate-500 ${selectionMode === "multiple" ? "rounded" : "rounded-full"}`} /></td>{row.map((cell, cellIndex) => <td key={cellIndex} className={`px-4 py-3 ${table.hasBorder ? "border border-slate-300" : ""}`}>{table.cellImages?.[rowIndex]?.[cellIndex]?.imageUrl && <img src={table.cellImages[rowIndex][cellIndex].imageUrl} alt="" className="mx-auto mb-2 max-h-40 max-w-full object-contain" />}<div className="rich-text-content" dangerouslySetInnerHTML={{ __html: cell }} /></td>)}</tr>)}</tbody></table></div>;
+}
+
+function dropdownEntryBounds(entry: DropdownEntry, index: number) {
+  const x = entry.x ?? 8 + (index % 3) * 24;
+  const y = entry.y ?? Math.min(84, 35 + Math.floor(index / 3) * 14);
+  return { x, y, width: Math.min(entry.width ?? 20, 100 - x), height: Math.min(entry.height ?? 8, 100 - y) };
+}
+
+function DropdownCanvasFields({ data }: { data: DropdownQuestionData }) {
+  return <>{data.entries.map((entry, index) => {
+    const bounds = dropdownEntryBounds(entry, index);
+    return <div key={entry.id} className="absolute z-20" style={{ left: `${bounds.x}%`, top: `${bounds.y}%`, width: `${bounds.width}%`, height: `${bounds.height}%` }}>
+      <CanvasDropdownField disabled ariaLabel={`Dropdown ${index + 1}`} options={getDropdownEntryOptions(entry)} />
+    </div>;
+  })}</>;
+}
+
+function FillBlankCanvasFields({ data }: { data: FillBlankData }) {
+  return <>{data.blanks.map((blank, index) => {
+    const bounds = getFillBlankBounds(blank, index);
+    return <div key={blank.id} className="absolute z-20" style={{ left: `${bounds.x}%`, top: `${bounds.y}%`, width: `${bounds.width}%`, height: `${bounds.height}%` }}><CanvasFillBlankField blank={blank} preview /></div>;
+  })}</>;
 }
 
 function SequencePreview({ data, itemPreviewUrls = {} }: { data: DragDropData; itemPreviewUrls?: Record<string, string> }) {
@@ -321,7 +355,7 @@ function SequencePreview({ data, itemPreviewUrls = {} }: { data: DragDropData; i
     <div className="overflow-x-auto pb-2">
       <div className="flex w-max gap-3">
         {data.items.map((item) => (
-          <div key={item.id} className="box-border flex min-h-16 w-32 shrink-0 flex-col items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-center text-sm font-medium text-black shadow-sm">
+          <div key={item.id} className="box-border flex min-h-16 w-32 shrink-0 flex-col items-center justify-center rounded-none border border-slate-300 bg-white/50 px-3 py-2 text-center text-sm font-medium text-black shadow-sm">
             {(itemPreviewUrls[item.id] || item.imageUrl) && <img src={itemPreviewUrls[item.id] || item.imageUrl} alt="" className="mb-2 max-h-24 max-w-32 object-contain" />}
             {item.content || "Untitled item"}
           </div>
@@ -342,17 +376,19 @@ function SequencePreview({ data, itemPreviewUrls = {} }: { data: DragDropData; i
 
 function LocationPreview({ data, itemPreviewUrls = {} }: { data: DragDropData; itemPreviewUrls?: Record<string, string> }) {
   const previewItems = data.items.map((item) => ({ ...item, imageUrl: itemPreviewUrls[item.id] || item.imageUrl }));
-  const boxSize = getLocationBoxSize(previewItems);
+  if (data.preset === "category-canvas") return <DragDropQuestion data={{ ...data, items: previewItems }} placements={{}} onChange={() => {}} />;
+  const boxSize = getLocationBoxSize(previewItems, data.choiceSize);
   const boxCanvasStyle = { width: `${boxSize.width / 10}cqw`, height: `${boxSize.height / 10}cqw` };
+  const canvasHeight = normalizeCanvasHeight(data.canvasHeight);
   return (
-    <div style={{ containerType: "inline-size" }} className={`relative overflow-hidden border border-slate-300 bg-slate-100 ${data.backgroundImageUrl ? "" : "aspect-video"}`}>
-      {data.backgroundImageUrl ? <img src={data.backgroundImageUrl} alt="Match locations background" className="block h-auto w-full object-contain" /> : <div className="absolute inset-0" />}
+    <div style={{ containerType: "inline-size", aspectRatio: `100 / ${canvasHeight}` }} className="relative w-full overflow-hidden border border-slate-300 bg-slate-100">
+      {data.backgroundImageUrl ? <img src={data.backgroundImageUrl} alt="Match locations background" className="absolute inset-0 h-full w-full object-contain" /> : <div className="absolute inset-0" />}
       <div className="absolute inset-0">
         {(data.canvasElements || []).map((element) => <div key={element.id} className="absolute" style={{ left: `${element.x}%`, top: `${element.y}%`, width: `${element.width}%`, height: `${element.height}%` }}><LocationCanvasElementContent element={element} /></div>)}
-        <div className={`absolute z-30 flex w-max ${data.choiceBankDirection === "vertical" ? "flex-col" : "flex-row"}`} style={{ left: `${data.choiceBankX ?? 8}%`, top: `${data.choiceBankY ?? 6}%`, gap: "0.8cqw" }}>
-          {previewItems.map((item) => <div key={item.id} style={{ ...boxCanvasStyle, padding: "1cqw 1.4cqw", fontSize: "1.7cqw" }} className="box-border flex shrink-0 flex-col items-center justify-center rounded border border-slate-400 bg-white text-center font-medium text-black shadow-sm">
+        <div className={data.choiceBankGrouped === false ? "contents" : `absolute z-30 flex w-max ${data.choiceBankDirection === "vertical" ? "flex-col" : "flex-row"}`} style={data.choiceBankGrouped === false ? undefined : { left: `${data.choiceBankX ?? 8}%`, top: `${data.choiceBankY ?? 6}%`, gap: "0.8cqw" }}>
+          {previewItems.map((item) => <div key={item.id} style={{ ...boxCanvasStyle, ...(data.choiceBankGrouped === false ? { position: "absolute", zIndex: 30, left: `${item.x ?? 8}%`, top: `${item.y ?? 35}%` } as const : {}), padding: "0.6cqw 0.8cqw", fontSize: "1.7cqw" }} className={`box-border flex shrink-0 flex-col items-center ${item.textVerticalAlign === "top" ? "justify-start" : item.textVerticalAlign === "bottom" ? "justify-end" : "justify-center"} rounded-none border border-slate-400 bg-white/50 text-center font-medium text-black shadow-sm`}>
             {item.imageUrl && <img src={item.imageUrl} alt="" style={{ maxHeight: "10cqw", maxWidth: "14cqw", marginBottom: "0.5cqw" }} className="min-h-0 flex-1 object-contain" />}
-            <span>{item.content || "Untitled choice"}</span>
+            <span className="rich-text-content min-w-0 max-w-full" dangerouslySetInnerHTML={{ __html: getDragDropItemHtml(item) }} />
           </div>)}
         </div>
         {data.zones.map((zone, index) => (
@@ -363,6 +399,16 @@ function LocationPreview({ data, itemPreviewUrls = {} }: { data: DragDropData; i
       </div>
     </div>
   );
+}
+
+function InlineBlankPreview({ data, itemPreviewUrls = {} }: { data: DragDropData; itemPreviewUrls?: Record<string, string> }) {
+  const previewItems = data.items.map((item) => ({ ...item, imageUrl: itemPreviewUrls[item.id] || item.imageUrl }));
+  const boxSize = getLocationBoxSize(previewItems, data.choiceSize);
+  const boxStyle = { width: `${boxSize.width}px`, height: `${boxSize.height}px` };
+  return <div className="space-y-5">
+    <div className="rounded-xl border border-slate-200 bg-white p-5 text-lg leading-[3.5rem] text-slate-950">{getInlineBlankSegments(data.inlineText || "").length ? getInlineBlankSegments(data.inlineText || "").map((segment, segmentIndex) => segment.type === "text" ? <span key={segmentIndex} className="whitespace-pre-wrap">{segment.content}</span> : <span key={segmentIndex} aria-label={`Answer target ${segment.index + 1}`} style={boxStyle} className="mx-1 inline-flex box-border border-2 border-dashed border-slate-400 bg-white align-middle" />) : <span className="text-slate-400">Add a sentence or passage to see its blanks here.</span>}</div>
+    <div><p className="mb-2 text-xs font-bold uppercase tracking-[0.14em] text-slate-500">Choices</p><div className="flex flex-wrap gap-3">{previewItems.map((item) => <div key={item.id} style={boxStyle} className="box-border flex shrink-0 flex-col items-center justify-center rounded-none border border-slate-300 bg-white/50 px-4 py-3 text-center text-sm font-medium text-slate-900 shadow-sm">{item.imageUrl && <img src={item.imageUrl} alt="" className="mb-2 min-h-0 max-h-24 max-w-32 flex-1 object-contain" />}<span className="rich-text-content min-w-0 max-w-full" dangerouslySetInnerHTML={{ __html: getDragDropItemHtml(item) }} /></div>)}</div></div>
+  </div>;
 }
 
 function SavedQuestionStudentPreview({
@@ -378,6 +424,39 @@ function SavedQuestionStudentPreview({
   const hasChoiceImages = Boolean(
     question.question_data.choiceImages?.some((image) => image.imageUrl)
   );
+  if ((question.question_type === "drag-and-drop" || question.question_type === "sort-into-groups")) {
+    const data = asLocationDragDropData(question.question_data.dragDrop, question.question_data.canvas);
+    const rightCanvas = <LocationPreview data={data} />;
+    if (!isSplit) return rightCanvas;
+    return <div className={`grid grid-cols-2 overflow-hidden bg-white text-slate-900 ${embedded ? "" : "rounded-2xl border border-slate-200"}`}>
+      {question.question_data.leftCanvas
+        ? <div className="flex min-w-0 items-start border-r border-slate-200"><QuestionCanvas canvas={normalizeQuestionCanvas(question.question_data.leftCanvas)} className="w-full border-0" /></div>
+        : <div className="border-r border-slate-200 bg-slate-50/70" />}
+      <div className="flex min-w-0 items-start bg-white">{rightCanvas}</div>
+    </div>;
+  }
+  if (question.question_data.canvas) {
+    const canvas = normalizeQuestionCanvas(question.question_data.canvas);
+    const promptNode = question.question_data.promptHtml
+        ? <div className="rich-text-content text-[2cqw] leading-snug" dangerouslySetInnerHTML={{ __html: question.question_data.promptHtml }} />
+        : <div className="text-[2cqw] font-semibold leading-snug">{question.prompt}</div>;
+    const responseNode = question.question_type === "multiple-choice"
+      ? <div className="grid gap-[0.8cqw] text-[1.5cqw]">{question.question_data.choices?.map((choice, choiceIndex) => { const choiceImage = question.question_data.choiceImages?.[choiceIndex]?.imageUrl; const choiceMarkup = question.question_data.choiceHtml?.[choiceIndex]; return (choice || choiceImage) ? <div key={choiceIndex} className="rounded border border-slate-300 bg-white/50 px-[1.2cqw] py-[0.7cqw]">{getMultipleChoiceSelectionMode(question.question_data) === "multiple" && <span className="mr-[0.8cqw] inline-block h-[1.5cqw] w-[1.5cqw] rounded-sm border border-slate-500 align-middle" />}{choiceImage && <img src={choiceImage} alt="" className="mx-auto mb-[0.6cqw] max-h-[8cqw] max-w-full object-contain" />}{choiceMarkup ? <div className="rich-text-content" dangerouslySetInnerHTML={{ __html: choiceMarkup }} /> : choice}</div> : null; })}</div>
+      : null;
+    const canvasPreview = <QuestionCanvas canvas={canvas} legacyPrompt={promptNode} interaction={responseNode} overlays={question.question_type === "dropdown" ? <DropdownCanvasFields data={normalizeDropdownData(question.question_data.dropdown)} /> : question.question_type === "fill-in-the-blank" ? <FillBlankCanvasFields data={normalizeFillBlankData(question.question_data.fillBlank, question.question_data.template, question.question_data.blanks)} /> : undefined} choices={question.question_type === "multiple-choice" ? (question.question_data.choices || []).map((text, choiceIndex) => ({ text, html: question.question_data.choiceHtml?.[choiceIndex], imageUrl: question.question_data.choiceImages?.[choiceIndex]?.imageUrl })) : undefined} className={`w-full ${embedded ? "border-0" : "rounded-2xl"}`} />;
+    if (!isSplit) return canvasPreview;
+    return <div className={`grid grid-cols-2 overflow-hidden bg-white text-slate-900 ${embedded ? "" : "rounded-2xl border border-slate-200"}`}>
+      {question.question_data.leftCanvas ? <div className="flex min-w-0 items-start border-r border-slate-200"><QuestionCanvas canvas={normalizeQuestionCanvas(question.question_data.leftCanvas)} className="w-full border-0" /></div> : <div className="border-r border-slate-200 bg-slate-50/70 p-6">
+        <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Reference material</p>
+        {question.question_data.leftPanelTitle && <h3 className="mt-3 text-2xl font-bold">{question.question_data.leftPanelTitle}</h3>}
+        {question.question_data.leftPanelTopContent && <div className="rich-text-content mt-4 text-slate-700" dangerouslySetInnerHTML={{ __html: question.question_data.leftPanelTopContent }} />}
+        {question.question_data.leftPanelImageUrl && <img src={question.question_data.leftPanelImageUrl} alt={question.question_data.leftPanelTitle || "Question reference"} className="mt-5 max-h-72 w-full rounded-xl border border-slate-200 bg-white object-contain p-2" />}
+        {question.question_data.leftPanelContent && <div className="rich-text-content mt-4 text-slate-700" dangerouslySetInnerHTML={{ __html: question.question_data.leftPanelContent }} />}
+        {leftPanelTableHasContent(question.question_data.leftPanelTable) && <div className="mt-5 overflow-x-auto"><table className={`w-full border-collapse text-left text-sm ${question.question_data.leftPanelTable?.hasBorder ? "border border-slate-300" : ""}`}><tbody>{question.question_data.leftPanelTable?.cells.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, columnIndex) => { const Cell = rowIndex === 0 ? "th" : "td"; return <Cell key={columnIndex} className={`px-3 py-2 ${rowIndex === 0 ? "font-semibold" : ""} ${question.question_data.leftPanelTable?.hasBorder ? "border border-slate-300" : ""}`}>{cell}</Cell>; })}</tr>)}</tbody></table></div>}
+      </div>}
+      <div className="flex items-start bg-white">{canvasPreview}</div>
+    </div>;
+  }
 
   return (
     <div className={`grid overflow-hidden bg-white text-slate-900 ${embedded ? "" : "rounded-2xl border border-slate-200"} ${isSplit ? "lg:grid-cols-2" : ""}`}>
@@ -419,22 +498,19 @@ function SavedQuestionStudentPreview({
         {!embedded && (
           <p className="text-xs font-semibold uppercase tracking-wider text-blue-600">Question {index + 1}</p>
         )}
-        {question.question_type === "fill-in-the-blank" ? (
-          <h3 className="mt-3 text-xl font-semibold leading-8">
-            {makeStudentPreview(question.question_data.template || question.prompt)}
-          </h3>
-        ) : question.question_data.promptHtml ? (
+        {question.question_type !== "fill-in-the-blank" && (question.question_data.promptHtml ? (
           <div className="rich-text-content mt-3 text-xl leading-8" dangerouslySetInnerHTML={{ __html: question.question_data.promptHtml }} />
         ) : (
           <h3 className="mt-3 text-xl font-semibold leading-8">{question.prompt}</h3>
-        )}
+        ))}
 
         {question.question_type === "multiple-choice" && question.question_data.choiceTable?.enabled ? (
-          <ChoiceTablePreview table={question.question_data.choiceTable} />
+          <ChoiceTablePreview table={question.question_data.choiceTable} selectionMode={getMultipleChoiceSelectionMode(question.question_data)} />
         ) : question.question_type === "multiple-choice" && (
           <div className={`mt-6 grid w-fit max-w-full ${hasChoiceImages ? "grid-cols-1 gap-4 sm:grid-cols-2" : "grid-cols-[fit-content(32rem)] gap-3"}`}>
             {question.question_data.choices?.map((choice, choiceIndex) => (
               <div key={choiceIndex} className={`w-full rounded-xl border-2 border-slate-200 text-slate-700 ${hasChoiceImages ? "max-w-[22rem] p-4" : "max-w-full px-5 py-3"}`}>
+                {getMultipleChoiceSelectionMode(question.question_data) === "multiple" && <span className="mr-3 inline-block h-5 w-5 rounded border-2 border-slate-500 align-middle" />}
                 {question.question_data.choiceImages?.[choiceIndex]?.imageUrl && (
                   <img
                     src={question.question_data.choiceImages[choiceIndex].imageUrl}
@@ -447,28 +523,9 @@ function SavedQuestionStudentPreview({
             ))}
           </div>
         )}
-        {question.question_type === "drag-and-drop" && (() => {
-          const data = normalizeDragDropData(question.question_data.dragDrop);
-          return (
-            <div className="mt-6 space-y-4">
-              {data.preset !== "sequence" && data.preset !== "locations" && <div className={`flex flex-wrap gap-3 ${data.preset === "categories" ? "justify-center" : ""}`}>
-                {data.items.map((item) => (
-                  <div key={item.id} style={data.preset === "locations" ? getLocationBoxSize(data.items) : undefined} className={`${data.preset === "categories" ? "min-w-28 rounded-none border-slate-500 px-4 py-2 text-center font-serif font-semibold" : data.preset === "locations" ? "flex shrink-0 flex-col items-center justify-center rounded border-slate-400 px-3 py-2 text-center text-sm font-medium shadow-sm" : "rounded-lg border-slate-300 px-3 py-2 text-sm font-medium shadow-sm"} box-border border bg-white text-slate-900`}>
-                    {item.imageUrl && <img src={item.imageUrl} alt="" className="mb-2 h-16 max-w-28 object-contain" />}
-                    {item.content}
-                  </div>
-                ))}
-              </div>}
-              {data.preset === "sequence" ? <SequencePreview data={data} /> : data.preset === "locations" ? <LocationPreview data={data} /> : <div className={`grid ${data.preset === "categories" ? "gap-2 sm:grid-cols-2" : "gap-3"}`}>
-                {data.zones.map((zone, zoneIndex) => (
-                  <div key={zone.id} className={`${data.preset === "categories" ? "min-h-40 rounded-none border border-slate-500 bg-white" : "min-h-20 rounded-xl border-2 border-dashed border-blue-200 bg-blue-50/40 p-3"}`}>
-                    <div className={`${data.preset === "categories" ? "border-b border-slate-500 px-3 py-2 text-center font-serif font-semibold text-slate-900" : "text-sm font-semibold text-blue-800"}`}>{zone.label || `Position ${zoneIndex + 1}`}</div>
-                  </div>
-                ))}
-              </div>}
-            </div>
-          );
-        })()}
+        {question.question_type === "dropdown" && (
+          <div className="mt-6"><DropdownQuestionPreview data={normalizeDropdownData(question.question_data.dropdown)} /></div>
+        )}
         {question.question_type === "short-answer" && (
           <div className="mt-6 space-y-4">
             {question.question_data.answerBoxes?.map((box, boxIndex) => (
@@ -480,10 +537,15 @@ function SavedQuestionStudentPreview({
           </div>
         )}
         {question.question_type === "fill-in-the-blank" && (
-          <div className="mt-5 flex flex-wrap gap-3">
-            {question.question_data.blanks?.map((blank, blankIndex) => (
-              <span key={blank.id} className="h-11 w-32 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-400">Blank {blankIndex + 1}</span>
-            ))}
+          <div className="mt-6">
+            <FillBlankQuestion
+              preview
+              data={normalizeFillBlankData(
+                question.question_data.fillBlank,
+                question.question_data.template,
+                question.question_data.blanks,
+              )}
+            />
           </div>
         )}
         {question.question_type === "sorting-order" && (
@@ -526,8 +588,15 @@ export default function AssessmentEditorPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
+  const [draftOwnerId, setDraftOwnerId] = useState("");
+  const [closingQuestion, setClosingQuestion] = useState(false);
+  const [publishingQuestion, setPublishingQuestion] = useState(false);
   const [assessmentId, setAssessmentId] = useState("");
   const [assessment, setAssessment] = useState<Assessment | null>(null);
+  const [formulaSheetOpen, setFormulaSheetOpen] = useState(false);
+  const [formulaSheetDraft, setFormulaSheetDraft] = useState<QuestionCanvasData>(createDefaultQuestionCanvas);
+  const [savingFormulaSheet, setSavingFormulaSheet] = useState(false);
+  const [formulaSheetError, setFormulaSheetError] = useState("");
   const [questions, setQuestions] = useState<Question[]>([]);
   const [titleDraft, setTitleDraft] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
@@ -538,15 +607,18 @@ export default function AssessmentEditorPage({
   const [questionBuilderStep, setQuestionBuilderStep] = useState(1);
   const [questionSetupCollapsed, setQuestionSetupCollapsed] = useState(false);
   const [dragDropData, setDragDropData] = useState<DragDropData>(() => createDefaultDragDropData());
+  const [dropdownData, setDropdownData] = useState<DropdownQuestionData>(() => createDefaultDropdownData());
+  const [fillBlankData, setFillBlankData] = useState<FillBlankData>(() => createDefaultFillBlankData());
+  const [questionCanvas, setQuestionCanvas] = useState<QuestionCanvasData>(() => createDefaultQuestionCanvas());
+  const [leftQuestionCanvas, setLeftQuestionCanvas] = useState<QuestionCanvasData>(() => createDefaultQuestionCanvas());
   const [selectedDragDropItemFiles, setSelectedDragDropItemFiles] = useState<Record<string, File>>({});
   const [dragDropItemPreviewUrls, setDragDropItemPreviewUrls] = useState<Record<string, string>>({});
   const selectedDragDropItemFilesRef = useRef<Record<string, File>>({});
   const uploadedDragDropFilesRef = useRef(new WeakMap<File, { imageUrl: string; imagePath: string }>());
 
-  const [prompt, setPrompt] = useState("");
-  const [promptHtml, setPromptHtml] = useState("");
   const [questionLayout, setQuestionLayout] =
     useState<QuestionLayout>("standard");
+  const [layoutSelectionMade, setLayoutSelectionMade] = useState(false);
   const [splitEditorTab, setSplitEditorTab] = useState<SplitEditorTab>("left");
   const [leftPanelTitle, setLeftPanelTitle] = useState("");
   const [leftPanelTopContent, setLeftPanelTopContent] = useState("");
@@ -570,9 +642,12 @@ export default function AssessmentEditorPage({
     ["", ""],
   ]);
 
-  const [choiceTexts, setChoiceTexts] = useState(["", "", "", ""]);
-  const [choiceHtml, setChoiceHtml] = useState(["", "", "", ""]);
-  const [correctChoiceIndex, setCorrectChoiceIndex] = useState(0);
+  const [choiceTexts, setChoiceTexts] = useState<string[]>([]);
+  const [choiceHtml, setChoiceHtml] = useState<string[]>([]);
+  const [choiceIds, setChoiceIds] = useState<string[]>([]);
+  const [correctChoiceIndex, setCorrectChoiceIndex] = useState(-1);
+  const [correctChoiceIndexes, setCorrectChoiceIndexes] = useState<number[]>([]);
+  const [multipleChoiceSelectionMode, setMultipleChoiceSelectionMode] = useState<MultipleChoiceSelectionMode | null>(null);
   const [choiceTableEnabled, setChoiceTableEnabled] = useState(false);
   const [choiceTableHeaders, setChoiceTableHeaders] = useState(["Column 1", "Column 2"]);
   const [choiceTableRows, setChoiceTableRows] = useState<string[][]>(
@@ -585,14 +660,7 @@ export default function AssessmentEditorPage({
   const [selectedChoiceTableCellFiles, setSelectedChoiceTableCellFiles] = useState<Record<string, File>>({});
   const [choiceTableCellPreviewUrls, setChoiceTableCellPreviewUrls] = useState<Record<string, string>>({});
   const [choiceTableUploadedPickerCell, setChoiceTableUploadedPickerCell] = useState<string | null>(null);
-  const [multipleChoiceImages, setMultipleChoiceImages] = useState<
-    MultipleChoiceImage[]
-  >([
-    { imageUrl: "", imagePath: "" },
-    { imageUrl: "", imagePath: "" },
-    { imageUrl: "", imagePath: "" },
-    { imageUrl: "", imagePath: "" },
-  ]);
+  const [multipleChoiceImages, setMultipleChoiceImages] = useState<MultipleChoiceImage[]>([]);
   const [selectedMultipleChoiceImageFiles, setSelectedMultipleChoiceImageFiles] =
     useState<Record<number, File>>({});
   const [multipleChoiceImagePreviewUrls, setMultipleChoiceImagePreviewUrls] =
@@ -658,6 +726,253 @@ export default function AssessmentEditorPage({
   const [dragOverQuestionId, setDragOverQuestionId] = useState<string | null>(null);
   const [reorderingQuestions, setReorderingQuestions] = useState(false);
 
+  // Only editor input changes create snapshots; save status/list updates cannot reset the form.
+  const editorSnapshot = useMemo(() => ({
+    questionType,
+    questionBuilderStep,
+    questionSetupCollapsed,
+    dragDropData,
+    dropdownData,
+    fillBlankData,
+    questionCanvas,
+    leftQuestionCanvas,
+    selectedDragDropItemFiles,
+    dragDropItemPreviewUrls,
+    questionLayout,
+    layoutSelectionMade,
+    splitEditorTab,
+    leftPanelTitle,
+    leftPanelTopContent,
+    leftPanelContent,
+    selectedLeftPanelImageFile,
+    existingLeftPanelImageUrl,
+    existingLeftPanelImagePath,
+    leftPanelImagePreviewUrl,
+    selectedReferenceQuestionId,
+    referenceBuildName,
+    leftPanelTableEnabled,
+    leftPanelTableHasBorder,
+    leftPanelTableCells,
+    choiceTexts,
+    choiceHtml,
+    choiceIds,
+    correctChoiceIndex,
+    correctChoiceIndexes,
+    multipleChoiceSelectionMode,
+    choiceTableEnabled,
+    choiceTableHeaders,
+    choiceTableRows,
+    choiceTableHasBorder,
+    choiceTableCellImages,
+    selectedChoiceTableCellFiles,
+    choiceTableCellPreviewUrls,
+    multipleChoiceImages,
+    selectedMultipleChoiceImageFiles,
+    multipleChoiceImagePreviewUrls,
+    answerBoxes,
+    selectedImageFile,
+    existingImageUrl,
+    existingImagePath,
+    imagePreviewUrl,
+    overlayBoxes,
+    overlayAnswerMode,
+    draggableChoices,
+    draggableImageChoices,
+    selectedImageChoiceFiles,
+    imageChoicePreviewUrls,
+    selectedSortingItemFiles,
+    sortingItemPreviewUrls,
+    sortingItems,
+    sortingCategories,
+    editingQuestionId,
+  }), [
+    questionType,
+    questionBuilderStep,
+    questionSetupCollapsed,
+    dragDropData,
+    dropdownData,
+    fillBlankData,
+    questionCanvas,
+    leftQuestionCanvas,
+    selectedDragDropItemFiles,
+    dragDropItemPreviewUrls,
+    questionLayout,
+    layoutSelectionMade,
+    splitEditorTab,
+    leftPanelTitle,
+    leftPanelTopContent,
+    leftPanelContent,
+    selectedLeftPanelImageFile,
+    existingLeftPanelImageUrl,
+    existingLeftPanelImagePath,
+    leftPanelImagePreviewUrl,
+    selectedReferenceQuestionId,
+    referenceBuildName,
+    leftPanelTableEnabled,
+    leftPanelTableHasBorder,
+    leftPanelTableCells,
+    choiceTexts,
+    choiceHtml,
+    choiceIds,
+    correctChoiceIndex,
+    correctChoiceIndexes,
+    multipleChoiceSelectionMode,
+    choiceTableEnabled,
+    choiceTableHeaders,
+    choiceTableRows,
+    choiceTableHasBorder,
+    choiceTableCellImages,
+    selectedChoiceTableCellFiles,
+    choiceTableCellPreviewUrls,
+    multipleChoiceImages,
+    selectedMultipleChoiceImageFiles,
+    multipleChoiceImagePreviewUrls,
+    answerBoxes,
+    selectedImageFile,
+    existingImageUrl,
+    existingImagePath,
+    imagePreviewUrl,
+    overlayBoxes,
+    overlayAnswerMode,
+    draggableChoices,
+    draggableImageChoices,
+    selectedImageChoiceFiles,
+    imageChoicePreviewUrls,
+    selectedSortingItemFiles,
+    sortingItemPreviewUrls,
+    sortingItems,
+    sortingCategories,
+    editingQuestionId,
+  ]);
+  const questionDrafts = useQuestionDrafts({
+    ownerId: draftOwnerId, assessmentId, snapshot: editorSnapshot,
+    enabled: questionModalOpen && !publishingQuestion,
+  });
+
+  async function deleteQuestionDraft(record: QuestionDraft) {
+    try {
+      await questionDrafts.remove(record);
+      if (questionDrafts.activeId === record.id) resetQuestionForm();
+    } catch {
+      alert("This draft could not be deleted. Please try again.");
+    }
+  }
+
+  async function resumeQuestionDraft(record: QuestionDraft) {
+    try {
+      const snapshot = await questionDrafts.restore(record);
+      if (snapshot.existingImagePath) {
+        snapshot.existingImageUrl = await createPrivateImageUrl(supabase, snapshot.existingImagePath).catch(() => snapshot.existingImageUrl);
+        if (!snapshot.selectedImageFile) snapshot.imagePreviewUrl = snapshot.existingImageUrl;
+      }
+      if (snapshot.existingLeftPanelImagePath) {
+        snapshot.existingLeftPanelImageUrl = await createPrivateImageUrl(supabase, snapshot.existingLeftPanelImagePath).catch(() => snapshot.existingLeftPanelImageUrl);
+        if (!snapshot.selectedLeftPanelImageFile) snapshot.leftPanelImagePreviewUrl = snapshot.existingLeftPanelImageUrl;
+      }
+      snapshot.multipleChoiceImages.forEach((image, index) => {
+        if (!snapshot.selectedMultipleChoiceImageFiles[index]) snapshot.multipleChoiceImagePreviewUrls[index] = image.imageUrl;
+      });
+      snapshot.dragDropData.items.forEach(item => {
+        if (!snapshot.selectedDragDropItemFiles[item.id]) snapshot.dragDropItemPreviewUrls[item.id] = item.imageUrl || "";
+      });
+      snapshot.choiceTableCellImages.forEach((row, rowIndex) => row.forEach((image, columnIndex) => {
+        const key = `${rowIndex}-${columnIndex}`;
+        if (!snapshot.selectedChoiceTableCellFiles[key]) snapshot.choiceTableCellPreviewUrls[key] = image.imageUrl;
+      }));
+
+      setQuestionType(snapshot.questionType);
+      setQuestionBuilderStep(snapshot.questionBuilderStep);
+      setQuestionSetupCollapsed(snapshot.questionSetupCollapsed);
+      setDragDropData((snapshot.questionType === "drag-and-drop" || snapshot.questionType === "sort-into-groups") ? asLocationDragDropData(snapshot.dragDropData) : snapshot.dragDropData);
+      setDropdownData(snapshot.dropdownData);
+      setFillBlankData(snapshot.fillBlankData);
+      setQuestionCanvas(snapshot.questionCanvas);
+      setLeftQuestionCanvas(snapshot.leftQuestionCanvas);
+      setSelectedDragDropItemFiles(snapshot.selectedDragDropItemFiles);
+      setDragDropItemPreviewUrls(snapshot.dragDropItemPreviewUrls);
+      setQuestionLayout(snapshot.questionLayout);
+      setLayoutSelectionMade(snapshot.layoutSelectionMade);
+      setSplitEditorTab(snapshot.splitEditorTab);
+      setLeftPanelTitle(snapshot.leftPanelTitle);
+      setLeftPanelTopContent(snapshot.leftPanelTopContent);
+      setLeftPanelContent(snapshot.leftPanelContent);
+      setSelectedLeftPanelImageFile(snapshot.selectedLeftPanelImageFile);
+      setExistingLeftPanelImageUrl(snapshot.existingLeftPanelImageUrl);
+      setExistingLeftPanelImagePath(snapshot.existingLeftPanelImagePath);
+      setLeftPanelImagePreviewUrl(snapshot.leftPanelImagePreviewUrl);
+      setSelectedReferenceQuestionId(snapshot.selectedReferenceQuestionId);
+      setReferenceBuildName(snapshot.referenceBuildName);
+      setLeftPanelTableEnabled(snapshot.leftPanelTableEnabled);
+      setLeftPanelTableHasBorder(snapshot.leftPanelTableHasBorder);
+      setLeftPanelTableCells(snapshot.leftPanelTableCells);
+      setChoiceTexts(snapshot.choiceTexts);
+      setChoiceHtml(snapshot.choiceHtml);
+      setChoiceIds(snapshot.choiceIds);
+      setCorrectChoiceIndex(snapshot.correctChoiceIndex);
+      setCorrectChoiceIndexes(snapshot.correctChoiceIndexes);
+      setMultipleChoiceSelectionMode(snapshot.multipleChoiceSelectionMode);
+      setChoiceTableEnabled(snapshot.choiceTableEnabled);
+      setChoiceTableHeaders(snapshot.choiceTableHeaders);
+      setChoiceTableRows(snapshot.choiceTableRows);
+      setChoiceTableHasBorder(snapshot.choiceTableHasBorder);
+      setChoiceTableCellImages(snapshot.choiceTableCellImages);
+      setSelectedChoiceTableCellFiles(snapshot.selectedChoiceTableCellFiles);
+      setChoiceTableCellPreviewUrls(snapshot.choiceTableCellPreviewUrls);
+      setMultipleChoiceImages(snapshot.multipleChoiceImages);
+      setSelectedMultipleChoiceImageFiles(snapshot.selectedMultipleChoiceImageFiles);
+      setMultipleChoiceImagePreviewUrls(snapshot.multipleChoiceImagePreviewUrls);
+      setAnswerBoxes(snapshot.answerBoxes);
+      setSelectedImageFile(snapshot.selectedImageFile);
+      setExistingImageUrl(snapshot.existingImageUrl);
+      setExistingImagePath(snapshot.existingImagePath);
+      setImagePreviewUrl(snapshot.imagePreviewUrl);
+      setOverlayBoxes(snapshot.overlayBoxes);
+      setOverlayAnswerMode(snapshot.overlayAnswerMode);
+      setDraggableChoices(snapshot.draggableChoices);
+      setDraggableImageChoices(snapshot.draggableImageChoices);
+      setSelectedImageChoiceFiles(snapshot.selectedImageChoiceFiles);
+      setImageChoicePreviewUrls(snapshot.imageChoicePreviewUrls);
+      setSelectedSortingItemFiles(snapshot.selectedSortingItemFiles);
+      setSortingItemPreviewUrls(snapshot.sortingItemPreviewUrls);
+      setSortingItems(snapshot.sortingItems);
+      setSortingCategories(snapshot.sortingCategories);
+      setEditingQuestionId(snapshot.editingQuestionId);
+      selectedDragDropItemFilesRef.current = { ...snapshot.selectedDragDropItemFiles };
+      setQuestionModalOpen(true);
+    } catch {
+      alert("This draft could not be opened. Please try again.");
+    }
+  }
+
+  async function closeQuestionEditor() {
+    setClosingQuestion(true);
+    try {
+      await questionDrafts.save(false);
+      resetQuestionForm();
+    } catch {
+      alert("Your draft could not be saved. Keep the editor open and try again.");
+    } finally { setClosingQuestion(false); }
+  }
+
+  async function saveQuestionDraft() {
+    try { await questionDrafts.save(); }
+    catch { alert("Your draft could not be saved. Keep the editor open and try again."); }
+  }
+
+  async function publishQuestion() {
+    if (publishingQuestion || !validateQuestionForm()) return;
+    setPublishingQuestion(true);
+    try {
+      await questionDrafts.save();
+      if (editingQuestionId) await updateQuestion();
+      else await addQuestion();
+    } catch {
+      alert("Your draft could not be saved. Please try again.");
+    } finally {
+      setPublishingQuestion(false);
+    }
+  }
+
   const imageQuestionIsScored = useMemo(() => {
     return overlayBoxes.length > 0;
   }, [overlayBoxes]);
@@ -702,6 +1017,14 @@ export default function AssessmentEditorPage({
         question.question_data.dragDrop?.backgroundImagePath,
         `${label} · Location background`
       );
+      question.question_data.canvas?.elements.forEach((element, elementIndex) => {
+        if (element.type === "image") addImage(element.imageUrl, element.imagePath, `${label} · Question canvas image ${elementIndex + 1}`);
+      });
+      addImage(question.question_data.canvas?.backgroundImageUrl, question.question_data.canvas?.backgroundImagePath, `${label} · Question canvas background`);
+      question.question_data.leftCanvas?.elements.forEach((element, elementIndex) => {
+        if (element.type === "image") addImage(element.imageUrl, element.imagePath, `${label} · Left canvas image ${elementIndex + 1}`);
+      });
+      addImage(question.question_data.leftCanvas?.backgroundImageUrl, question.question_data.leftCanvas?.backgroundImagePath, `${label} · Left canvas background`);
       question.question_data.draggableImageChoices?.forEach((choice) =>
         addImage(choice.imageUrl, choice.imagePath, `${label} · ${choice.label}`)
       );
@@ -819,6 +1142,7 @@ export default function AssessmentEditorPage({
   async function loadAssessment(id: string) {
     const user = await requireAccountRole("teacher");
     if (!user) return;
+    setDraftOwnerId(user.id);
 
     const { data: assessmentData, error: assessmentError } = await supabase
       .from("assessments")
@@ -836,7 +1160,7 @@ export default function AssessmentEditorPage({
       .from("questions")
       .select("*")
       .eq("assessment_id", id)
-      .in("question_type", ["multiple-choice", "drag-and-drop"])
+      .in("question_type", ["multiple-choice", "drag-and-drop", "sort-into-groups", "dropdown", "fill-in-the-blank"])
       .order("question_order", { ascending: true })
       .order("id", { ascending: true });
 
@@ -864,12 +1188,41 @@ export default function AssessmentEditorPage({
       console.error("Could not load account image library:", imageError.message);
     }
 
-    setAssessment(assessmentData);
+    let hydrated = {
+      assessment: assessmentData as Assessment,
+      questions: (questionData || []) as Question[],
+      references: (referenceData || []) as ReferenceBuild[],
+      images: (imageData || []) as AccountImage[],
+    };
+    try {
+      hydrated = await hydratePrivateImageUrls(supabase, hydrated);
+    } catch (error) {
+      console.error("Could not authorize assessment images:", error);
+    }
+
+    setAssessment(hydrated.assessment);
     setTitleDraft(assessmentData.title);
-    setQuestions((questionData || []) as Question[]);
-    setReferenceBuilds((referenceData || []) as ReferenceBuild[]);
-    setAccountImages((imageData || []) as AccountImage[]);
+    setQuestions(hydrated.questions);
+    setReferenceBuilds(hydrated.references);
+    setAccountImages(hydrated.images);
     setLoading(false);
+  }
+
+  async function saveFormulaSheet(value: QuestionCanvasData | null) {
+    if (!assessment) return;
+    setSavingFormulaSheet(true);
+    setFormulaSheetError("");
+    try {
+      const { data, error } = await supabase.from("assessments")
+        .update({ formula_sheet: value }).eq("id", assessment.id).select("id").single();
+      if (error || !data) throw new Error(error?.message || "Could not save the formula sheet.");
+      setAssessment((current) => current ? { ...current, formula_sheet: value } : current);
+      setFormulaSheetOpen(false);
+    } catch (error) {
+      setFormulaSheetError(error instanceof Error ? error.message : "Could not save the formula sheet.");
+    } finally {
+      setSavingFormulaSheet(false);
+    }
   }
 
   async function saveAssessmentTitle() {
@@ -903,25 +1256,133 @@ export default function AssessmentEditorPage({
     setSavingTitle(false);
   }
 
-  function updateRichPrompt(html: string) {
-    setPromptHtml(html);
-    const container = document.createElement("div");
-    container.innerHTML = html;
-    setPrompt(container.innerText);
+  function getCanvasPromptHtml() {
+    const elements = (questionType === "drag-and-drop" || questionType === "sort-into-groups")
+      ? dragDropData.canvasElements || []
+      : questionCanvas.elements;
+    return elements
+      .filter((element) => element.type === "text")
+      .map((element) => element.textHtml || plainTextToHtml(element.text || ""))
+      .filter((value) => richHtmlToPlainText(value))
+      .join("<br>");
   }
+
+  function getCanvasPromptText() {
+    return richHtmlToPlainText(getCanvasPromptHtml());
+  }
+
+  function getDropdownBounds(entry: DropdownEntry, index: number) {
+    return dropdownEntryBounds(entry, index);
+  }
+
+  function updateDropdownEntry(entryId: string, patch: Partial<DropdownEntry>) {
+    setDropdownData((current) => ({
+      ...current,
+      layout: "inline",
+      template: "",
+      entries: current.entries.map((entry) => entry.id === entryId ? { ...entry, ...patch } : entry),
+    }));
+  }
+
+  function updateDropdownOptions(entry: DropdownEntry, options: string[]) {
+    updateDropdownEntry(entry.id, {
+      options,
+      correctAnswer: options.includes(entry.correctAnswer)
+        ? entry.correctAnswer
+        : "",
+    });
+  }
+
+  function updateDropdownOption(entry: DropdownEntry, optionIndex: number, value: string) {
+    const options = entry.options || [];
+    const previousValue = options[optionIndex] || "";
+    const nextOptions = options.map((option, index) => index === optionIndex ? value : option);
+    updateDropdownEntry(entry.id, {
+      options: nextOptions,
+      correctAnswer: entry.correctAnswer === previousValue ? value : entry.correctAnswer,
+    });
+  }
+
+  function addDropdownToCanvas() {
+    setDropdownData((current) => {
+      const index = current.entries.length;
+      const x = 8 + (index % 3) * 24;
+      const y = Math.min(84, 35 + Math.floor(index / 3) * 14);
+      return {
+        layout: "inline",
+        template: "",
+        entries: [...current.entries, {
+          id: makeDropdownId(),
+          label: "",
+          options: ["Option 1", "Option 2"],
+          correctAnswer: "",
+          x,
+          y,
+          width: Math.min(20, 100 - x),
+          height: Math.min(8, 100 - y),
+        }],
+      };
+    });
+  }
+
+  function updateFillBlank(blankId: string, patch: Partial<FillBlankEntry>) {
+    setFillBlankData((current) => ({
+      ...current,
+      layout: "inline",
+      template: "",
+      blanks: current.blanks.map((blank) => blank.id === blankId ? { ...blank, ...patch } : blank),
+    }));
+  }
+
+  function addFillBlankToCanvas() {
+    setFillBlankData((current) => ({
+      ...current,
+      layout: "inline",
+      template: "",
+      blanks: [...current.blanks, createFillBlankEntry("text", current.blanks.length)],
+    }));
+    setQuestionCanvas((current) => ({ ...current, interaction: undefined }));
+  }
+
+  function removeFillBlank(blankId: string) {
+    setFillBlankData((current) => ({ ...current, template: "", blanks: current.blanks.filter((blank) => blank.id !== blankId) }));
+  }
+
+  function dropdownEditor(entry: DropdownEntry, index: number) {
+    const options = entry.options || [];
+    return <div>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-bold text-slate-900">Dropdown {index + 1}</p>
+        <button type="button" onClick={() => setDropdownData((current) => ({ ...current, entries: current.entries.filter((item) => item.id !== entry.id) }))} className="text-xs font-semibold text-red-600 hover:text-red-700">Remove dropdown</button>
+      </div>
+      <p className="mt-1 text-xs text-slate-500">Select the circle beside the correct answer.</p>
+      <div className="mt-3 space-y-2">
+        {options.map((option, optionIndex) => <div key={optionIndex} className="flex items-center gap-2">
+          <input type="radio" name={`correct-${entry.id}`} checked={entry.correctAnswer === option && Boolean(option.trim())} onChange={() => updateDropdownEntry(entry.id, { correctAnswer: option })} disabled={!option.trim()} aria-label={`Mark answer ${optionIndex + 1} correct`} className="h-4 w-4 shrink-0 accent-emerald-600" />
+          <input value={option} onChange={(event) => updateDropdownOption(entry, optionIndex, event.target.value)} placeholder={`Answer ${optionIndex + 1}`} className="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-950" />
+          <button type="button" onClick={() => updateDropdownOptions(entry, options.filter((_, itemIndex) => itemIndex !== optionIndex))} aria-label={`Remove answer ${optionIndex + 1}`} className="grid h-8 w-8 shrink-0 place-items-center rounded text-lg text-red-600 hover:bg-red-50">×</button>
+        </div>)}
+      </div>
+      <button type="button" onClick={() => updateDropdownOptions(entry, [...options, ""])} className="mt-3 rounded-lg border border-blue-300 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-100">+ Add answer</button>
+    </div>;
+  }
+
 
   function resetQuestionForm() {
     setQuestionType("multiple-choice");
     setQuestionBuilderStep(1);
     setQuestionSetupCollapsed(false);
     setDragDropData(createDefaultDragDropData());
+    setDropdownData(createDefaultDropdownData());
+    setFillBlankData(createDefaultFillBlankData());
+    setQuestionCanvas(createDefaultQuestionCanvas());
+    setLeftQuestionCanvas(createDefaultQuestionCanvas());
     selectedDragDropItemFilesRef.current = {};
     setSelectedDragDropItemFiles({});
     setDragDropItemPreviewUrls({});
-    setPrompt("");
-    setPromptHtml("");
     setQuestionLayout("standard");
-    setSplitEditorTab("left");
+    setLayoutSelectionMade(false);
+    setSplitEditorTab("right");
     setLeftPanelTitle("");
     setLeftPanelTopContent("");
     setLeftPanelContent("");
@@ -936,9 +1397,12 @@ export default function AssessmentEditorPage({
     setLeftPanelTableHasBorder(true);
     setLeftPanelTableCells([["", ""], ["", ""]]);
 
-    setChoiceTexts(["", "", "", ""]);
-    setChoiceHtml(["", "", "", ""]);
-    setCorrectChoiceIndex(0);
+    setChoiceTexts([]);
+    setChoiceHtml([]);
+    setChoiceIds([]);
+    setCorrectChoiceIndex(-1);
+    setCorrectChoiceIndexes([]);
+    setMultipleChoiceSelectionMode(null);
     setChoiceTableEnabled(false);
     setChoiceTableHeaders(["Column 1", "Column 2"]);
     setChoiceTableRows(Array.from({ length: 4 }, () => ["", ""]));
@@ -947,7 +1411,7 @@ export default function AssessmentEditorPage({
     setSelectedChoiceTableCellFiles({});
     setChoiceTableCellPreviewUrls({});
     setChoiceTableUploadedPickerCell(null);
-    setMultipleChoiceImages(Array.from({ length: 4 }, () => ({ imageUrl: "", imagePath: "" })));
+    setMultipleChoiceImages([]);
     setSelectedMultipleChoiceImageFiles({});
     setMultipleChoiceImagePreviewUrls({});
     setMultipleChoiceUploadedPickerIndex(null);
@@ -988,6 +1452,13 @@ export default function AssessmentEditorPage({
   }
 
   function addMultipleChoiceOption() {
+    setQuestionCanvas((current) => {
+      const layout = current.choiceLayout;
+      if (!layout?.sameSize) return current;
+      const first = layout.positions[0];
+      return { ...current, choiceLayout: { ...layout, positions: [...Array.from({ length: choiceIds.length }, (_, index) => layout.positions[index] || { x: 8, y: 35 + index * 12 }), { x: 8, y: 35 + choiceIds.length * 12, width: first?.width, height: first?.height }] } };
+    });
+    setChoiceIds((current) => [...current, makeDragDropId()]);
     setChoiceTexts((current) => [...current, ""]);
     setChoiceHtml((current) => [...current, ""]);
     setChoiceTableRows((current) => [
@@ -1002,13 +1473,10 @@ export default function AssessmentEditorPage({
   }
 
   function removeMultipleChoiceOption(index: number) {
-    if (choiceTexts.length <= 2) {
-      alert("A multiple choice question needs at least 2 choices.");
-      return;
-    }
-
     setChoiceTexts((current) => current.filter((_, itemIndex) => itemIndex !== index));
     setChoiceHtml((current) => current.filter((_, itemIndex) => itemIndex !== index));
+    setChoiceIds((current) => current.filter((_, itemIndex) => itemIndex !== index));
+    setQuestionCanvas((current) => current.choiceLayout ? { ...current, choiceLayout: { ...current.choiceLayout, positions: current.choiceLayout.positions.filter((_, itemIndex) => itemIndex !== index) } } : current);
     setChoiceTableRows((current) =>
       current.filter((_, itemIndex) => itemIndex !== index)
     );
@@ -1031,8 +1499,14 @@ export default function AssessmentEditorPage({
       )
     );
     setCorrectChoiceIndex((current) => {
-      if (current === index) return 0;
+      if (current === index) return -1;
       return current > index ? current - 1 : current;
+    });
+    setCorrectChoiceIndexes((current) => {
+      const adjusted = current
+        .filter((choiceIndex) => choiceIndex !== index)
+        .map((choiceIndex) => choiceIndex > index ? choiceIndex - 1 : choiceIndex);
+      return adjusted;
     });
     setMultipleChoiceUploadedPickerIndex(null);
   }
@@ -1162,54 +1636,49 @@ export default function AssessmentEditorPage({
     return choices[correctChoiceIndex] || getImageChoiceValue(correctChoiceIndex);
   }
 
-  function validateQuestionForm() {
-    if (!prompt.trim()) {
-      alert("Please enter a question.");
-      return false;
-    }
+  function getCorrectChoices(choices: string[]) {
+    const indexes = (multipleChoiceSelectionMode === "multiple" ? correctChoiceIndexes : [correctChoiceIndex])
+      .filter((index) => index >= 0 && index < choices.length);
+    return [...new Set(indexes.map((index) => choices[index] || getImageChoiceValue(index)))];
+  }
 
+  function validateQuestionForm(
+    reportError: (message: string) => void = (message) => window.alert(message),
+  ) {
     if (questionType === "multiple-choice") {
+      if (!multipleChoiceSelectionMode) {
+        reportError("Choose whether this question has one answer or multiple answers.");
+        return false;
+      }
       const choices = getChoicesFromForm();
+      if (choices.length < 2) {
+        reportError("Add at least two choices to the canvas.");
+        return false;
+      }
+      if (getCorrectChoices(choices).length === 0) {
+        reportError("Select at least one correct answer.");
+        return false;
+      }
       if (choiceTableEnabled) {
         if (choiceTableHeaders.some((header) => !header.trim())) {
-          alert("Enter a heading for every table column.");
+          reportError("Enter a heading for every table column.");
           return false;
         }
         if (
           choiceTableRows.length < 2 ||
-          choiceTableRows.some((row, rowIndex) =>
-            row.length !== choiceTableHeaders.length ||
-            row.some((cell, columnIndex) =>
-              !richHtmlToPlainText(cell) &&
-              !selectedChoiceTableCellFiles[`${rowIndex}-${columnIndex}`] &&
-              !choiceTableCellImages[rowIndex]?.[columnIndex]?.imageUrl
-            )
-          )
+          choiceTableRows.some((row) => row.length !== choiceTableHeaders.length)
         ) {
-          alert("Add at least 2 complete table rows. Every cell needs text, an image, or both.");
+          reportError("Add at least 2 table rows with matching columns.");
           return false;
         }
         return true;
       }
-      const choiceHasContent = choices.map(
-        (choice, index) =>
-          Boolean(
-            choice ||
-              selectedMultipleChoiceImageFiles[index] ||
-              multipleChoiceImagePreviewUrls[index] ||
-              multipleChoiceImages[index]?.imageUrl
-          )
-      );
 
-      if (choices.length < 2 || choiceHasContent.some((hasContent) => !hasContent)) {
-        alert("Add at least 2 choices. Each choice needs text, an image, or both.");
-        return false;
-      }
     }
 
-    if (questionType === "drag-and-drop") {
-      if (dragDropData.items.length < 1 || dragDropData.items.some((item) => !item.content.trim() && !item.imageUrl && !selectedDragDropItemFiles[item.id])) {
-        alert("Add at least one complete draggable item.");
+    if ((questionType === "drag-and-drop" || questionType === "sort-into-groups")) {
+      if (dragDropData.items.length < 1 || (dragDropData.preset !== "locations" && dragDropData.items.some((item) => !item.content.trim() && !item.imageUrl && !selectedDragDropItemFiles[item.id]))) {
+        reportError("Add at least one complete draggable item.");
         return false;
       }
       if (dragDropData.preset === "sequence") {
@@ -1217,58 +1686,91 @@ export default function AssessmentEditorPage({
         const correctOrder = dragDropData.zones[0]?.correctItemIds.slice(0, targetCount) || [];
         const itemIds = new Set(dragDropData.items.map((item) => item.id));
         if (dragDropData.items.length < targetCount) {
-          alert(`Add at least ${targetCount} draggable choices for ${targetCount} drop targets.`);
+          reportError(`Add at least ${targetCount} draggable choices for ${targetCount} drop targets.`);
           return false;
         }
         if (correctOrder.length !== targetCount || correctOrder.some((itemId) => !itemId || !itemIds.has(itemId)) || new Set(correctOrder).size !== targetCount) {
-          alert("Assign one different draggable choice to every correct position.");
+          reportError("Assign one different draggable choice to every correct position.");
+          return false;
+        }
+      } else if (dragDropData.preset === "inline") {
+        const blankCount = getInlineBlankCount(dragDropData.inlineText || "");
+        const itemIds = new Set(dragDropData.items.map((item) => item.id));
+        if (!dragDropData.inlineText?.trim() || blankCount < 1) {
+          reportError("Write a sentence or passage and add at least one blank.");
+          return false;
+        }
+        if (dragDropData.zones.length !== blankCount) {
+          reportError("Each blank in the passage must have one matching answer-key row.");
+          return false;
+        }
+        if (dragDropData.zones.some((zone) => !zone.correctItemIds[0] || !itemIds.has(zone.correctItemIds[0]))) {
+          reportError("Choose the correct draggable answer for every blank.");
           return false;
         }
       } else if (dragDropData.preset === "locations") {
         const itemIds = new Set(dragDropData.items.map((item) => item.id));
-        const correctItemIds = dragDropData.zones.map((zone) => zone.correctItemIds[0]);
+        const correctItemIds = dragDropData.zones.flatMap((zone) => zone.correctItemIds);
         if (dragDropData.zones.length < 1) {
-          alert("Add at least one location target.");
+          reportError("Add at least one location target.");
           return false;
         }
         if (correctItemIds.some((itemId) => !itemId || !itemIds.has(itemId))) {
-          alert("Choose one correct draggable choice for every location target.");
+          reportError("Assigned answers must reference an existing draggable choice.");
           return false;
         }
         if (new Set(correctItemIds).size !== correctItemIds.length) {
-          alert("Each location target needs a different correct choice.");
+          reportError("Each location target needs a different correct choice.");
           return false;
         }
-      } else if (dragDropData.zones.length < 1 || dragDropData.zones.some((zone) => !zone.label.trim())) {
-        alert("Add and name at least one drop target.");
+      } else {
+        if (dragDropData.zones.length < 1 || dragDropData.zones.some((zone) => !zone.label.trim())) {
+          reportError("Add and name at least one drop target.");
+          return false;
+        }
+        const itemIds = new Set(dragDropData.items.map((item) => item.id));
+        const assignedItemIds = dragDropData.zones.flatMap((zone) => zone.correctItemIds);
+        if (new Set(assignedItemIds).size !== assignedItemIds.length || assignedItemIds.some((itemId) => !itemIds.has(itemId)) || dragDropData.items.some((item) => !assignedItemIds.includes(item.id))) {
+          reportError("Assign every draggable item to its correct target.");
+          return false;
+        }
+      }
+    }
+
+    if (questionType === "dropdown") {
+      const data = normalizeDropdownData(dropdownData);
+      if (data.entries.length < 1 || data.entries.some((entry) => (entry.options || []).length < 2 || (entry.options || []).some((option) => !option.trim()))) {
+        reportError("Add at least 2 complete choices to every dropdown.");
+        return false;
+      }
+      if (!dropdownHasCompleteAnswerKey(data)) {
+        reportError("Choose a correct answer from each dropdown's own choices.");
         return false;
       }
     }
 
     if (questionType === "short-answer") {
       if (answerBoxes.length === 0) {
-        alert("Please add at least one answer box.");
+        reportError("Please add at least one answer box.");
         return false;
       }
 
       if (
         answerBoxes.some((answerBox) => answerBox.correctAnswer.trim() === "")
       ) {
-        alert("Please enter a correct answer for every answer box.");
+        reportError("Please enter a correct answer for every answer box.");
         return false;
       }
     }
 
     if (questionType === "fill-in-the-blank") {
-      const blanks = extractBlanksFromTemplate(prompt);
-
-      if (blanks.length === 0) {
-        alert("Please add at least one blank using [[answer]].");
+      const data = normalizeFillBlankData(fillBlankData);
+      if (data.blanks.length === 0) {
+        reportError("Add at least one answer area to the canvas.");
         return false;
       }
-
-      if (blanks.some((blank) => blank.correctAnswer === "")) {
-        alert("Every blank must contain a correct answer.");
+      if (data.blanks.some((blank) => !blank.correctAnswer.trim())) {
+        reportError("Enter a correct answer for every blank.");
         return false;
       }
     }
@@ -1277,7 +1779,7 @@ export default function AssessmentEditorPage({
       const cleanedItems = getCleanedSortingItems();
 
       if (cleanedItems.length < 2) {
-        alert("Please add at least two sorting items.");
+        reportError("Please add at least two sorting items.");
         return false;
       }
     }
@@ -1287,12 +1789,12 @@ export default function AssessmentEditorPage({
       const cleanedCategories = getCleanedSortingCategories();
 
       if (cleanedCategories.length < 2) {
-        alert("Please add at least two categories.");
+        reportError("Please add at least two categories.");
         return false;
       }
 
       if (cleanedItems.length < 2) {
-        alert("Please add at least two sorting items.");
+        reportError("Please add at least two sorting items.");
         return false;
       }
 
@@ -1302,25 +1804,30 @@ export default function AssessmentEditorPage({
       );
 
       if (missingCategory) {
-        alert("Please choose the correct category for every item.");
+        reportError("Please choose the correct category for every item.");
         return false;
       }
     }
 
     if (questionType === "image-question") {
       if (!selectedImageFile && !existingImageUrl) {
-        alert("Please upload an image for this question.");
+        reportError("Please upload an image for this question.");
+        return false;
+      }
+
+      if (overlayBoxes.length === 0) {
+        reportError("Add at least one answer area and assign its correct answer.");
         return false;
       }
 
       for (const box of overlayBoxes) {
         if (!box.correctAnswer.trim()) {
-          alert("Please enter a correct answer for every overlay box.");
+          reportError("Please enter a correct answer for every overlay box.");
           return false;
         }
 
         if (box.width <= 0 || box.height <= 0) {
-          alert("Overlay box width and height must be greater than 0.");
+          reportError("Overlay box width and height must be greater than 0.");
           return false;
         }
       }
@@ -1331,7 +1838,7 @@ export default function AssessmentEditorPage({
           .filter(Boolean);
 
         if (cleanedChoices.length === 0) {
-          alert("Please add at least one draggable choice.");
+          reportError("Please add at least one draggable choice.");
           return false;
         }
 
@@ -1344,7 +1851,7 @@ export default function AssessmentEditorPage({
         );
 
         if (missingChoice) {
-          alert(
+          reportError(
             "Every overlay box correct answer must also appear as a draggable choice."
           );
           return false;
@@ -1359,7 +1866,7 @@ export default function AssessmentEditorPage({
         );
 
         if (usableImageChoices.length === 0) {
-          alert("Please add at least one draggable image choice.");
+          reportError("Please add at least one draggable image choice.");
           return false;
         }
 
@@ -1370,7 +1877,7 @@ export default function AssessmentEditorPage({
         );
 
         if (missingImageChoice) {
-          alert(
+          reportError(
             "Every overlay box correct answer must be selected from the draggable image choices."
           );
           return false;
@@ -1379,6 +1886,14 @@ export default function AssessmentEditorPage({
     }
 
     return true;
+  }
+
+  function getQuestionValidationError() {
+    let validationError = "";
+    validateQuestionForm((message) => {
+      validationError ||= message;
+    });
+    return validationError;
   }
 
   function updateAnswerBox(
@@ -1544,8 +2059,8 @@ export default function AssessmentEditorPage({
         const filePath = `${assessmentId}/drag-drop-library-${Date.now()}-${itemId}-${cleanFileName(file.name)}`;
         const { error } = await supabase.storage.from("question-images").upload(filePath, file, { upsert: false });
         if (error) throw new Error(error.message);
-        const { data } = supabase.storage.from("question-images").getPublicUrl(filePath);
-        const uploadedImage = { imageUrl: data.publicUrl, imagePath: filePath };
+        const imageUrl = await createPrivateImageUrl(supabase, filePath);
+        const uploadedImage = { imageUrl, imagePath: filePath };
         await rememberAccountImage(uploadedImage.imageUrl, uploadedImage.imagePath, file.name);
         uploadedDragDropFilesRef.current.set(file, uploadedImage);
 
@@ -1621,9 +2136,9 @@ export default function AssessmentEditorPage({
       const filePath = `${assessmentId}/location-background-${Date.now()}-${cleanFileName(file.name)}`;
       const { error } = await supabase.storage.from("question-images").upload(filePath, file, { upsert: false });
       if (error) throw new Error(error.message);
-      const { data } = supabase.storage.from("question-images").getPublicUrl(filePath);
-      await rememberAccountImage(data.publicUrl, filePath, file.name);
-      return { url: data.publicUrl, path: filePath };
+      const imageUrl = await createPrivateImageUrl(supabase, filePath);
+      await rememberAccountImage(imageUrl, filePath, file.name);
+      return { url: imageUrl, path: filePath };
     } finally {
       setUploadingImage(false);
     }
@@ -1645,6 +2160,10 @@ export default function AssessmentEditorPage({
     })));
     setReferenceBuilds((current) => current.map((reference) => clearImageReference(reference, image.image_url, image.image_path)));
     setDragDropData((current) => clearImageReference(current, image.image_url, image.image_path));
+    setQuestionCanvas((current) => clearImageReference(current, image.image_url, image.image_path));
+    setLeftQuestionCanvas((current) => clearImageReference(current, image.image_url, image.image_path));
+    setFormulaSheetDraft((current) => clearImageReference(current, image.image_url, image.image_path));
+    setAssessment((current) => current ? { ...current, formula_sheet: clearImageReference(current.formula_sheet, image.image_url, image.image_path) } : current);
     setMultipleChoiceImages((current) => clearImageReference(current, image.image_url, image.image_path));
     setChoiceTableCellImages((current) => clearImageReference(current, image.image_url, image.image_path));
     setDragDropItemPreviewUrls((current) => Object.fromEntries(Object.entries(current).filter(([, url]) => url !== image.image_url)));
@@ -1686,8 +2205,8 @@ export default function AssessmentEditorPage({
         setUploadingImage(false);
         throw new Error(error.message);
       }
-      const { data: publicUrlData } = supabase.storage.from("question-images").getPublicUrl(filePath);
-      const uploadedImage = { imageUrl: publicUrlData.publicUrl, imagePath: filePath };
+      const imageUrl = await createPrivateImageUrl(supabase, filePath);
+      const uploadedImage = { imageUrl, imagePath: filePath };
       await rememberAccountImage(uploadedImage.imageUrl, uploadedImage.imagePath, item.content || file.name);
       uploadedFiles.set(file, uploadedImage);
       items.push({ ...item, ...uploadedImage });
@@ -1718,11 +2237,9 @@ export default function AssessmentEditorPage({
         setUploadingImage(false);
         throw new Error(error.message);
       }
-      const { data } = supabase.storage
-        .from("question-images")
-        .getPublicUrl(filePath);
-      await rememberAccountImage(data.publicUrl, filePath, choiceTexts[index] || file.name);
-      uploadedImages.push({ imageUrl: data.publicUrl, imagePath: filePath });
+      const imageUrl = await createPrivateImageUrl(supabase, filePath);
+      await rememberAccountImage(imageUrl, filePath, choiceTexts[index] || file.name);
+      uploadedImages.push({ imageUrl, imagePath: filePath });
     }
 
     setUploadingImage(false);
@@ -1743,9 +2260,9 @@ export default function AssessmentEditorPage({
         const filePath = `${assessmentId}/choice-table-${Date.now()}-${rowIndex}-${columnIndex}-${cleanFileName(file.name)}`;
         const { error } = await supabase.storage.from("question-images").upload(filePath, file, { upsert: false });
         if (error) { setUploadingImage(false); throw new Error(error.message); }
-        const { data } = supabase.storage.from("question-images").getPublicUrl(filePath);
-        await rememberAccountImage(data.publicUrl, filePath, `${choiceTableHeaders[columnIndex] || `Column ${columnIndex + 1}`} · ${file.name}`);
-        nextImages[rowIndex][columnIndex] = { imageUrl: data.publicUrl, imagePath: filePath };
+        const imageUrl = await createPrivateImageUrl(supabase, filePath);
+        await rememberAccountImage(imageUrl, filePath, `${choiceTableHeaders[columnIndex] || `Column ${columnIndex + 1}`} · ${file.name}`);
+        nextImages[rowIndex][columnIndex] = { imageUrl, imagePath: filePath };
       }
     }
     setUploadingImage(false);
@@ -2120,13 +2637,12 @@ export default function AssessmentEditorPage({
         throw new Error(uploadError.message);
       }
 
-      const { data } = supabase.storage
-        .from("question-images")
-        .getPublicUrl(filePath);
+      const imageUrl = await createPrivateImageUrl(supabase, filePath);
+      await rememberAccountImage(imageUrl, filePath, item.text || selectedFile.name);
 
       uploadedItems.push({
         ...item,
-        imageUrl: data.publicUrl,
+        imageUrl,
         imagePath: filePath,
       });
     }
@@ -2158,16 +2674,14 @@ export default function AssessmentEditorPage({
       throw new Error(uploadError.message);
     }
 
-    const { data } = supabase.storage
-      .from("question-images")
-      .getPublicUrl(filePath);
+    const imageUrl = await createPrivateImageUrl(supabase, filePath);
 
-    await rememberAccountImage(data.publicUrl, filePath, selectedImageFile.name);
+    await rememberAccountImage(imageUrl, filePath, selectedImageFile.name);
 
     setUploadingImage(false);
 
     return {
-      imageUrl: data.publicUrl,
+      imageUrl,
       imagePath: filePath,
     };
   }
@@ -2225,14 +2739,13 @@ export default function AssessmentEditorPage({
           throw new Error(uploadError.message);
         }
 
-        const { data } = supabase.storage
-          .from("question-images")
-          .getPublicUrl(filePath);
+        const imageUrl = await createPrivateImageUrl(supabase, filePath);
+        await rememberAccountImage(imageUrl, filePath, label || selectedFile.name);
 
         uploadedChoices.push({
           id: choice.id,
           label,
-          imageUrl: data.publicUrl,
+          imageUrl,
           imagePath: filePath,
         });
       } else if (choice.imageUrl) {
@@ -2270,14 +2783,12 @@ export default function AssessmentEditorPage({
       throw new Error(error.message);
     }
 
-    const { data } = supabase.storage
-      .from("question-images")
-      .getPublicUrl(filePath);
+    const imageUrl = await createPrivateImageUrl(supabase, filePath);
 
-    await rememberAccountImage(data.publicUrl, filePath, leftPanelTitle || selectedLeftPanelImageFile.name);
+    await rememberAccountImage(imageUrl, filePath, leftPanelTitle || selectedLeftPanelImageFile.name);
 
     setUploadingImage(false);
-    return { imageUrl: data.publicUrl, imagePath: filePath };
+    return { imageUrl, imagePath: filePath };
   }
 
   async function getQuestionLayoutData() {
@@ -2286,10 +2797,20 @@ export default function AssessmentEditorPage({
         ? await uploadLeftPanelImage()
         : { imageUrl: "", imagePath: "" };
 
+    const normalizedCanvas = normalizeQuestionCanvas(questionCanvas);
+    const normalizedLeftCanvas = normalizeQuestionCanvas(leftQuestionCanvas);
+    const hasLeftCanvasContent = Boolean(normalizedLeftCanvas.backgroundImageUrl || normalizedLeftCanvas.elements.length > 0);
+    const savedCanvas = (questionType === "drag-and-drop" || questionType === "sort-into-groups")
+      ? { ...createDefaultQuestionCanvas(), interaction: { x: 0, y: 0, width: 100, height: 100 } }
+      : questionType === "dropdown" || questionType === "fill-in-the-blank"
+        ? { ...normalizedCanvas, interaction: undefined }
+      : questionType === "multiple-choice" && multipleChoiceSelectionMode === "multiple" && normalizedCanvas.choiceLayout
+      ? { ...normalizedCanvas, choiceLayout: { ...normalizedCanvas.choiceLayout, presentation: "content" as const } }
+      : normalizedCanvas;
+
     return {
       layout: questionLayout,
-      promptHtml:
-        questionType === "fill-in-the-blank" ? "" : promptHtml.trim(),
+      promptHtml: getCanvasPromptHtml(),
       leftPanelTitle:
         questionLayout === "split" ? leftPanelTitle.trim() : "",
       leftPanelTopContent:
@@ -2310,6 +2831,8 @@ export default function AssessmentEditorPage({
           row.map((cell) => cell.trim())
         ),
       },
+      canvas: savedCanvas,
+      leftCanvas: questionLayout === "split" && hasLeftCanvasContent ? normalizedLeftCanvas : undefined,
     };
   }
 
@@ -2326,19 +2849,21 @@ export default function AssessmentEditorPage({
     try {
       if (questionType === "multiple-choice") {
         const choices = getChoicesFromForm();
-        const correctChoice = getCorrectChoice(choices);
+        const correctAnswers = getCorrectChoices(choices);
+        const correctChoice = correctAnswers[0] || getCorrectChoice(choices);
         const choiceImages = await uploadMultipleChoiceImages();
         const tableCellImages = await uploadChoiceTableCellImages();
 
-        const { error } = await supabase.from("questions").insert({
+        const { error } = await supabase.from("questions").upsert({ id: questionDrafts.activeId,
           assessment_id: assessmentId,
           question_type: "multiple-choice",
-          prompt: prompt.trim(),
+          prompt: getCanvasPromptText(),
           question_data: {
             ...(await getQuestionLayoutData()),
             choices,
             choiceImages,
             choiceHtml,
+            choiceIds,
             choiceTable: {
               enabled: choiceTableEnabled,
               headers: choiceTableHeaders.map((header) => header.trim()),
@@ -2346,7 +2871,9 @@ export default function AssessmentEditorPage({
               hasBorder: choiceTableHasBorder,
               cellImages: tableCellImages,
             },
+            selectionMode: multipleChoiceSelectionMode || "single",
             correctAnswer: correctChoice,
+            correctAnswers,
           },
           question_order: getNextQuestionOrder(),
         });
@@ -2356,12 +2883,22 @@ export default function AssessmentEditorPage({
           return;
         }
       }
-      if (questionType === "drag-and-drop") {
+      if ((questionType === "drag-and-drop" || questionType === "sort-into-groups")) {
         const uploadedDragDropData = await uploadDragDropItemImages(dragDropData);
-        const { error } = await supabase.from("questions").insert({ assessment_id: assessmentId, question_type: "drag-and-drop", prompt: prompt.trim(), question_data: { ...(await getQuestionLayoutData()), dragDrop: uploadedDragDropData }, question_order: getNextQuestionOrder() });
+        const { error } = await supabase.from("questions").upsert({ id: questionDrafts.activeId, assessment_id: assessmentId, question_type: questionType, prompt: getCanvasPromptText(), question_data: { ...(await getQuestionLayoutData()), dragDrop: uploadedDragDropData }, question_order: getNextQuestionOrder() });
+        if (error) { alert(error.message); return; }
+      }
+      if (questionType === "dropdown") {
+        const { error } = await supabase.from("questions").upsert({ id: questionDrafts.activeId, assessment_id: assessmentId, question_type: "dropdown", prompt: getCanvasPromptText(), question_data: { ...(await getQuestionLayoutData()), dropdown: normalizeDropdownData(dropdownData) }, question_order: getNextQuestionOrder() });
+        if (error) { alert(error.message); return; }
+      }
+      if (questionType === "fill-in-the-blank") {
+        const data = normalizeFillBlankData(fillBlankData);
+        const { error } = await supabase.from("questions").upsert({ id: questionDrafts.activeId, assessment_id: assessmentId, question_type: "fill-in-the-blank", prompt: getCanvasPromptText() || getFillBlankPromptText(data), question_data: { ...(await getQuestionLayoutData()), fillBlank: data, template: data.template, blanks: data.blanks }, question_order: getNextQuestionOrder() });
         if (error) { alert(error.message); return; }
       }
 
+      await questionDrafts.complete();
       resetQuestionForm();
       loadAssessment(assessmentId);
     } catch (error) {
@@ -2371,6 +2908,10 @@ export default function AssessmentEditorPage({
   }
 
   function startEditingQuestion(question: Question) {
+    const draft = questionDrafts.records.find(record => record.question_id === question.id);
+    if (draft) { void resumeQuestionDraft(draft); return; }
+    questionDrafts.begin(question.id);
+
     setQuestionModalOpen(true);
     setQuestionBuilderStep(4);
     setChoiceHtml(["", "", "", ""]);
@@ -2384,12 +2925,41 @@ export default function AssessmentEditorPage({
     setChoiceTableUploadedPickerCell(null);
     setEditingQuestionId(question.id);
     setQuestionType(question.question_type);
-    setDragDropData(normalizeDragDropData(question.question_data.dragDrop));
+    const savedDragDropData = normalizeDragDropData(question.question_data.dragDrop);
+    setDropdownData(normalizeDropdownData(question.question_data.dropdown));
+    setFillBlankData(normalizeFillBlankData(question.question_data.fillBlank, question.question_data.template || (question.question_type === "fill-in-the-blank" ? question.prompt : ""), question.question_data.blanks));
+    const savedCanvas = normalizeQuestionCanvas(question.question_data.canvas);
+    setDragDropData((question.question_type === "drag-and-drop" || question.question_type === "sort-into-groups")
+      ? asLocationDragDropData(savedDragDropData, savedCanvas)
+      : savedDragDropData);
+    setLeftQuestionCanvas(normalizeQuestionCanvas(question.question_data.leftCanvas));
+    const savedSelectionMode = question.question_type === "multiple-choice" ? getMultipleChoiceSelectionMode(question.question_data) : null;
+    const hasCanvasText = savedCanvas.elements.some((element) => element.type === "text");
+    const legacyPromptBounds = savedCanvas.legacyPrompt || { x: 6, y: 7, width: 88, height: 19 };
+    setQuestionCanvas({
+      ...savedCanvas,
+      legacyPrompt: undefined,
+      interaction: question.question_type === "multiple-choice" || question.question_type === "dropdown" || question.question_type === "fill-in-the-blank" ? undefined : savedCanvas.interaction || { ...DEFAULT_INTERACTION },
+      choiceLayout: question.question_type === "multiple-choice"
+        ? { ...(savedCanvas.choiceLayout || { grouped: true, direction: "vertical", presentation: "content", x: 8, y: 35, positions: [] }), ...(savedSelectionMode === "multiple" ? { presentation: "content" as const } : {}) }
+        : savedCanvas.choiceLayout,
+      elements: hasCanvasText || !question.prompt
+        ? savedCanvas.elements
+        : [...savedCanvas.elements, {
+            id: makeDragDropId(),
+            type: "text",
+            text: question.prompt,
+            textHtml: question.question_data.promptHtml || plainTextToHtml(question.prompt),
+            fontSize: 22,
+            ...legacyPromptBounds,
+          }],
+    });
     selectedDragDropItemFilesRef.current = {};
     setSelectedDragDropItemFiles({});
-    setDragDropItemPreviewUrls(Object.fromEntries(normalizeDragDropData(question.question_data.dragDrop).items.filter((item) => item.imageUrl).map((item) => [item.id, item.imageUrl || ""])));
+    setDragDropItemPreviewUrls(Object.fromEntries(savedDragDropData.items.filter((item) => item.imageUrl).map((item) => [item.id, item.imageUrl || ""])));
     setQuestionLayout(question.question_data.layout || "standard");
-    setSplitEditorTab("left");
+    setLayoutSelectionMade(true);
+    setSplitEditorTab("right");
     setSelectedReferenceQuestionId("");
     setLeftPanelTitle(question.question_data.leftPanelTitle || "");
     setLeftPanelTopContent(question.question_data.leftPanelTopContent || "");
@@ -2423,19 +2993,11 @@ export default function AssessmentEditorPage({
         : [["", ""], ["", ""]]
     );
 
-    if (question.question_type === "fill-in-the-blank") {
-      setPrompt(question.question_data.template || question.prompt);
-      setPromptHtml("");
-    } else {
-      setPrompt(question.prompt);
-      setPromptHtml(
-        question.question_data.promptHtml || plainTextToHtml(question.prompt)
-      );
-    }
-
     if (question.question_type === "multiple-choice") {
       const choices = question.question_data.choices || ["", "", "", ""];
-      const correctChoice = question.question_data.correctAnswer || choices[0];
+      const selectionMode = savedSelectionMode || "single";
+      const correctAnswers = getMultipleChoiceCorrectAnswers(question.question_data);
+      const correctChoice = correctAnswers[0] || choices[0];
       const savedChoiceTable = question.question_data.choiceTable;
       const choiceCount = savedChoiceTable?.enabled
         ? Math.max(2, savedChoiceTable.rows.length)
@@ -2445,6 +3007,7 @@ export default function AssessmentEditorPage({
           ? Array.from({ length: choiceCount }, () => "")
           : choices.length >= 2 ? choices : ["", ""]
       );
+      setChoiceIds(Array.from({ length: choiceCount }, (_, index) => question.question_data.choiceIds?.[index] || makeDragDropId()));
       setChoiceHtml(
         savedChoiceTable?.enabled
           ? Array.from({ length: choiceCount }, () => "")
@@ -2479,6 +3042,12 @@ export default function AssessmentEditorPage({
         ? Number(specialChoiceMatch[1]) - 1
         : choices.indexOf(correctChoice);
       setCorrectChoiceIndex(correctIndex >= 0 ? correctIndex : 0);
+      setMultipleChoiceSelectionMode(selectionMode);
+      const savedCorrectIndexes = correctAnswers.map((answer) => {
+        const specialMatch = answer.match(/^__(?:image|table)_choice_(\d+)__$/);
+        return specialMatch ? Number(specialMatch[1]) - 1 : choices.indexOf(answer);
+      }).filter((index) => index >= 0);
+      setCorrectChoiceIndexes(savedCorrectIndexes.length > 0 ? savedCorrectIndexes : [correctIndex >= 0 ? correctIndex : 0]);
 
       setAnswerBoxes([createAnswerBox()]);
       setSelectedImageFile(null);
@@ -2645,7 +3214,8 @@ export default function AssessmentEditorPage({
     try {
       if (questionType === "multiple-choice") {
         const choices = getChoicesFromForm();
-        const correctChoice = getCorrectChoice(choices);
+        const correctAnswers = getCorrectChoices(choices);
+        const correctChoice = correctAnswers[0] || getCorrectChoice(choices);
         const choiceImages = await uploadMultipleChoiceImages();
         const tableCellImages = await uploadChoiceTableCellImages();
 
@@ -2653,12 +3223,13 @@ export default function AssessmentEditorPage({
           .from("questions")
           .update({
             question_type: "multiple-choice",
-            prompt: prompt.trim(),
+            prompt: getCanvasPromptText(),
             question_data: {
               ...(await getQuestionLayoutData()),
               choices,
               choiceImages,
               choiceHtml,
+              choiceIds,
               choiceTable: {
                 enabled: choiceTableEnabled,
                 headers: choiceTableHeaders.map((header) => header.trim()),
@@ -2666,7 +3237,9 @@ export default function AssessmentEditorPage({
                 hasBorder: choiceTableHasBorder,
                 cellImages: tableCellImages,
               },
+              selectionMode: multipleChoiceSelectionMode || "single",
               correctAnswer: correctChoice,
+              correctAnswers,
             },
           })
           .eq("id", editingQuestionId);
@@ -2676,12 +3249,22 @@ export default function AssessmentEditorPage({
           return;
         }
       }
-      if (questionType === "drag-and-drop") {
+      if ((questionType === "drag-and-drop" || questionType === "sort-into-groups")) {
         const uploadedDragDropData = await uploadDragDropItemImages(dragDropData);
-        const { error } = await supabase.from("questions").update({ question_type: "drag-and-drop", prompt: prompt.trim(), question_data: { ...(await getQuestionLayoutData()), dragDrop: uploadedDragDropData } }).eq("id", editingQuestionId);
+        const { error } = await supabase.from("questions").update({ question_type: questionType, prompt: getCanvasPromptText(), question_data: { ...(await getQuestionLayoutData()), dragDrop: uploadedDragDropData } }).eq("id", editingQuestionId);
+        if (error) { alert(error.message); return; }
+      }
+      if (questionType === "dropdown") {
+        const { error } = await supabase.from("questions").update({ question_type: "dropdown", prompt: getCanvasPromptText(), question_data: { ...(await getQuestionLayoutData()), dropdown: normalizeDropdownData(dropdownData) } }).eq("id", editingQuestionId);
+        if (error) { alert(error.message); return; }
+      }
+      if (questionType === "fill-in-the-blank") {
+        const data = normalizeFillBlankData(fillBlankData);
+        const { error } = await supabase.from("questions").update({ question_type: "fill-in-the-blank", prompt: getCanvasPromptText() || getFillBlankPromptText(data), question_data: { ...(await getQuestionLayoutData()), fillBlank: data, template: data.template, blanks: data.blanks } }).eq("id", editingQuestionId);
         if (error) { alert(error.message); return; }
       }
 
+      await questionDrafts.complete();
       resetQuestionForm();
       loadAssessment(assessmentId);
     } catch (error) {
@@ -2828,13 +3411,70 @@ export default function AssessmentEditorPage({
     loadAssessment(assessmentId);
   }
 
-  const multipleChoicePreviewHasImages = choiceTexts.some(
-    (_, index) =>
-      Boolean(
-        multipleChoiceImagePreviewUrls[index] ||
-          multipleChoiceImages[index]?.imageUrl
-      )
-  );
+  const canvasResponsePreview = questionType === "multiple-choice"
+    ? <div className="grid gap-[0.8cqw] text-[1.5cqw]">{choiceTexts.map((choice, index) => { const choiceImage = multipleChoiceImagePreviewUrls[index] || multipleChoiceImages[index]?.imageUrl; return (choice.trim() || choiceImage) ? <div key={index} className="rounded border border-slate-300 bg-white/50 px-[1.2cqw] py-[0.7cqw]">{multipleChoiceSelectionMode === "multiple" && <span className="mr-[0.8cqw] inline-block h-[1.5cqw] w-[1.5cqw] rounded-sm border border-slate-500 align-middle" />}{choiceImage && <img src={choiceImage} alt="" className="mx-auto mb-[0.6cqw] max-h-[8cqw] max-w-full object-contain" />}{choiceHtml[index] ? <div className="rich-text-content" dangerouslySetInnerHTML={{ __html: choiceHtml[index] }} /> : choice}</div> : null; })}</div>
+    : questionType === "dropdown"
+      ? <DropdownQuestionPreview data={normalizeDropdownData(dropdownData)} />
+      : questionType === "fill-in-the-blank"
+        ? null
+        : dragDropData.preset === "locations"
+          ? <LocationPreview data={dragDropData} itemPreviewUrls={dragDropItemPreviewUrls} />
+          : dragDropData.preset === "sequence"
+            ? <SequencePreview data={dragDropData} itemPreviewUrls={dragDropItemPreviewUrls} />
+            : dragDropData.preset === "inline"
+              ? <InlineBlankPreview data={dragDropData} itemPreviewUrls={dragDropItemPreviewUrls} />
+              : <div className="grid gap-[0.8cqw] text-[1.5cqw]">{dragDropData.zones.map((zone, index) => <div key={zone.id} className="min-h-[5cqw] border-2 border-dashed border-blue-300 bg-blue-50/50 p-[1cqw]">{zone.label || `Target ${index + 1}`}</div>)}</div>;
+  const multipleChoiceCanvasLayout = questionCanvas.choiceLayout || { grouped: true, direction: "vertical" as const, presentation: "content" as const, x: 8, y: 35, positions: [] };
+  const questionValidationError = questionBuilderStep === 4 ? getQuestionValidationError() : "Finish the question setup first.";
+  const saveDisabledReason = uploadingImage ? "Wait for the image upload to finish." : questionValidationError;
+  const editingLeftCanvas = questionLayout === "split" && splitEditorTab === "left";
+  const multipleChoiceCanvasData: DragDropData = {
+    ...questionCanvasToComposition(questionCanvas),
+    items: choiceIds.map((id, index) => ({
+      id,
+      content: choiceTexts[index] || "",
+      imageUrl: multipleChoiceImages[index]?.imageUrl,
+      imagePath: multipleChoiceImages[index]?.imagePath,
+      x: multipleChoiceCanvasLayout.positions[index]?.x,
+      y: multipleChoiceCanvasLayout.positions[index]?.y,
+      width: multipleChoiceCanvasLayout.positions[index]?.width,
+      height: multipleChoiceCanvasLayout.positions[index]?.height,
+      textVerticalAlign: multipleChoiceCanvasLayout.positions[index]?.textVerticalAlign || "middle",
+    })),
+    choiceBankGrouped: multipleChoiceCanvasLayout.grouped,
+    choiceSameSize: multipleChoiceCanvasLayout.sameSize,
+    choiceBankDirection: multipleChoiceCanvasLayout.direction,
+    choicePresentation: multipleChoiceCanvasLayout.presentation,
+    choiceBankX: multipleChoiceCanvasLayout.x,
+    choiceBankY: multipleChoiceCanvasLayout.y,
+  };
+  const rightCanvasPreview = (questionType === "drag-and-drop" || questionType === "sort-into-groups")
+    ? <LocationPreview data={asLocationDragDropData(dragDropData)} itemPreviewUrls={dragDropItemPreviewUrls} />
+    : <QuestionCanvas canvas={questionCanvas} interaction={questionType === "dropdown" || questionType === "fill-in-the-blank" ? undefined : canvasResponsePreview} overlays={questionType === "dropdown" ? <DropdownCanvasFields data={normalizeDropdownData(dropdownData)} /> : questionType === "fill-in-the-blank" ? <FillBlankCanvasFields data={normalizeFillBlankData(fillBlankData)} /> : undefined} choices={questionType === "multiple-choice" ? choiceTexts.map((text, index) => ({ text, html: choiceHtml[index], imageUrl: multipleChoiceImagePreviewUrls[index] || multipleChoiceImages[index]?.imageUrl })) : undefined} className="w-full" />;
+
+  function updateMultipleChoiceCanvas(composition: DragDropData) {
+    setChoiceTexts(composition.items.map((item) => item.content));
+    setChoiceHtml((current) => composition.items.map((item, index) => item.content === choiceTexts[index] ? current[index] || plainTextToHtml(item.content) : plainTextToHtml(item.content)));
+    setQuestionCanvas((current) => ({
+      ...current,
+      backgroundImageUrl: composition.backgroundImageUrl,
+      backgroundImagePath: composition.backgroundImagePath,
+      canvasHeight: normalizeCanvasHeight(composition.canvasHeight),
+      elements: composition.canvasElements || [],
+      interaction: undefined,
+      choiceLayout: {
+        grouped: composition.choiceBankGrouped !== false,
+        sameSize: composition.choiceSameSize === true,
+        direction: composition.choiceBankDirection === "horizontal" ? "horizontal" : "vertical",
+        presentation: multipleChoiceSelectionMode === "multiple"
+          ? "content"
+          : composition.choicePresentation === "radio" || composition.choicePresentation === "box" ? composition.choicePresentation : "content",
+        x: composition.choiceBankX ?? 8,
+        y: composition.choiceBankY ?? 35,
+        positions: composition.items.map((item, index) => ({ x: item.x ?? multipleChoiceCanvasLayout.positions[index]?.x ?? 8, y: item.y ?? multipleChoiceCanvasLayout.positions[index]?.y ?? 35 + index * 12, width: item.width ?? multipleChoiceCanvasLayout.positions[index]?.width, height: item.height ?? multipleChoiceCanvasLayout.positions[index]?.height, textVerticalAlign: item.textVerticalAlign || multipleChoiceCanvasLayout.positions[index]?.textVerticalAlign || "middle" })),
+      },
+    }));
+  }
 
   async function signOut() {
     await supabase.auth.signOut();
@@ -2958,17 +3598,32 @@ export default function AssessmentEditorPage({
               </p>
             </div>
 
-            <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <div className="flex shrink-0 flex-col items-end gap-2">
+              <div className="flex flex-wrap items-center justify-end gap-2">
               <button
                 type="button"
                 onClick={() => {
                   resetQuestionForm();
+                  questionDrafts.begin();
                   setQuestionModalOpen(true);
                 }}
                 className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500"
               >
                 <span className="text-lg leading-none">+</span> Add Question
               </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setFormulaSheetDraft(normalizeQuestionCanvas(assessment.formula_sheet));
+                  setFormulaSheetError("");
+                  setFormulaSheetOpen(true);
+                }}
+                className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-800"
+              >
+                {assessment.formula_sheet ? "Edit Formula Sheet" : "Add Formula Sheet"}
+              </button>
+              </div>
+              <div className="flex items-center gap-2">
               {assessment.is_published ? (
                 <button
                   onClick={unpublishAssessment}
@@ -2984,22 +3639,80 @@ export default function AssessmentEditorPage({
                   Publish
                 </button>
               )}
+                <Link
+                  href={`/teacher/assessments/${assessment.id}/results`}
+                  className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-800"
+                >
+                  Run
+                </Link>
+                <Link
+                  href={`/student/${assessment.id}?preview=1`}
+                  className="rounded-xl border border-blue-700 px-4 py-2 text-sm font-semibold text-blue-300 hover:bg-blue-950"
+                >
+                  Preview
+                </Link>
+              </div>
             </div>
           </div>
         </div>
+
+        {formulaSheetOpen && (
+          <div className="fixed inset-0 z-50 overflow-y-auto bg-black/40 p-4 backdrop-blur-sm sm:p-8">
+            <section role="dialog" aria-modal="true" aria-labelledby="formula-sheet-title" className="mx-auto max-w-7xl rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl">
+              <div className="mb-5 flex items-center justify-between gap-4">
+                <h2 id="formula-sheet-title" className="text-2xl font-bold text-slate-900">Formula Sheet</h2>
+                <button type="button" disabled={savingFormulaSheet} onClick={() => setFormulaSheetOpen(false)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700">Cancel</button>
+              </div>
+              <fieldset disabled={savingFormulaSheet}>
+                <LocationCanvasEditor
+                  compositionOnly
+                  title="Formula sheet canvas"
+                  description="Add text, formulas, tables, and images. Students can open this sheet from Resources during the assessment."
+                  data={questionCanvasToComposition(formulaSheetDraft)}
+                  onChange={(composition) => setFormulaSheetDraft({ version: 2, backgroundImageUrl: composition.backgroundImageUrl, backgroundImagePath: composition.backgroundImagePath, canvasHeight: normalizeCanvasHeight(composition.canvasHeight), elements: composition.canvasElements || [] })}
+                  uploadedImages={uploadedImages}
+                  itemPreviewUrls={{}}
+                  onItemImageFileChange={() => {}}
+                  onChooseItemImage={() => {}}
+                  onRemoveItemImage={() => {}}
+                  onUploadBackground={uploadDragDropBackgroundImage}
+                  onDeleteUploadedImage={(image) => void deleteAccountImage({ id: image.id, image_url: image.url, image_path: image.path, label: image.label })}
+                />
+              </fieldset>
+              <section aria-labelledby="formula-sheet-preview-title" className="mt-6">
+                <h3 id="formula-sheet-preview-title" className="text-lg font-semibold text-slate-900">Student preview</h3>
+                <p className="mt-1 text-sm text-slate-600">When students open Resources, the formula sheet appears beside their question.</p>
+                <div className="mt-3 grid grid-cols-2 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                  <div className="min-w-0 border-r border-slate-200">
+                    <QuestionCanvas canvas={formulaSheetDraft} className="pointer-events-none border-0" />
+                  </div>
+                  <div className="flex min-w-0 flex-col items-center justify-center bg-slate-50 p-4 text-center sm:p-8">
+                    <p className="text-base font-semibold text-slate-600">Question area</p>
+                    <p className="mt-2 max-w-xs text-sm text-slate-500">The current question and answer controls appear here.</p>
+                  </div>
+                </div>
+              </section>
+              {formulaSheetError && <p role="alert" className="mt-4 text-sm text-red-600">{formulaSheetError}</p>}
+              <div className="mt-5 flex justify-end gap-3">
+                {assessment.formula_sheet && <button type="button" disabled={savingFormulaSheet} onClick={() => void saveFormulaSheet(null)} className="rounded-xl border border-red-300 px-4 py-2 font-semibold text-red-700 disabled:opacity-50">Remove Formula Sheet</button>}
+                <button type="button" disabled={savingFormulaSheet} onClick={() => void saveFormulaSheet(formulaSheetDraft)} className="rounded-xl bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-500 disabled:opacity-50">{savingFormulaSheet ? "Saving…" : "Save Formula Sheet"}</button>
+              </div>
+            </section>
+          </div>
+        )}
 
         {questionModalOpen && (
         <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 sm:p-8">
           <button
             type="button"
-            aria-label="Close question editor"
-            onClick={resetQuestionForm}
+            disabled={publishingQuestion || closingQuestion} aria-label="Close question editor"
+            onClick={() => void closeQuestionEditor()}
             className="fixed inset-0 bg-black/35 backdrop-blur-sm"
           />
-          <section className="relative z-10 w-full max-w-7xl rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl sm:p-8">
+          <section inert={publishingQuestion || closingQuestion} className="relative z-10 w-full max-w-7xl rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl sm:p-8">
           <button
             type="button"
-            onClick={resetQuestionForm}
+            onClick={() => void closeQuestionEditor()}
             aria-label="Close"
             className="absolute right-5 top-5 flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-xl text-slate-500 shadow-sm hover:bg-slate-50 hover:text-slate-900"
           >
@@ -3009,9 +3722,15 @@ export default function AssessmentEditorPage({
             {editingQuestionId ? "Edit Question" : "Add Question"}
           </h2>
 
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <span className="rounded bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-800">Draft</span>
+            <button type="button" onClick={() => void saveQuestionDraft()} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700">Save draft</button>
+            <span role="status" className="text-sm text-slate-600">{publishingQuestion ? "Publishing…" : questionDrafts.message}</span>
+          </div>
+
           {editingQuestionId && (
             <p className="mt-2 text-sm text-yellow-300">
-              You are currently editing an existing question.
+              Your edits remain a private draft until you publish them. The published version stays available to students.
             </p>
           )}
 
@@ -3026,54 +3745,33 @@ export default function AssessmentEditorPage({
             {questionBuilderStep >= 1 && <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
               <p className="text-xs font-bold uppercase tracking-[0.16em] text-blue-600">Step 1 · Question type</p>
               <h3 className="mt-2 text-lg font-semibold text-slate-950">What kind of question are you making?</h3>
-              <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                <button type="button" onClick={() => { setQuestionType("multiple-choice"); setQuestionBuilderStep(2); }} aria-pressed={questionBuilderStep >= 2 && questionType === "multiple-choice"} className={`rounded-xl border px-4 py-4 text-left font-semibold text-black transition ${questionBuilderStep >= 2 && questionType === "multiple-choice" ? "border-blue-500 bg-blue-100 ring-2 ring-blue-200" : "border-slate-300 bg-white hover:border-blue-400 hover:bg-blue-50"}`}>Multiple Choice<span className="mt-1 block text-xs font-normal text-slate-500">Students select one correct answer.</span></button>
-                <button type="button" onClick={() => { setQuestionType("drag-and-drop"); setQuestionBuilderStep(2); }} aria-pressed={questionBuilderStep >= 2 && questionType === "drag-and-drop"} className={`rounded-xl border px-4 py-4 text-left font-semibold text-black transition ${questionBuilderStep >= 2 && questionType === "drag-and-drop" ? "border-blue-500 bg-blue-100 ring-2 ring-blue-200" : "border-slate-300 bg-white hover:border-blue-400 hover:bg-blue-50"}`}>Drag &amp; Drop<span className="mt-1 block text-xs font-normal text-slate-500">Students move choices into targets or positions.</span></button>
+              <div className="mt-2 grid grid-cols-5 gap-2">
+                <button type="button" onClick={() => { setQuestionType("multiple-choice"); setQuestionLayout("standard"); setLayoutSelectionMade(false); setMultipleChoiceSelectionMode(null); setCorrectChoiceIndex(-1); setCorrectChoiceIndexes([]); setQuestionBuilderStep(2); }} aria-pressed={questionBuilderStep >= 2 && questionType === "multiple-choice"} className={`rounded-xl border px-4 py-4 text-left font-semibold text-black transition ${questionBuilderStep >= 2 && questionType === "multiple-choice" ? "border-blue-500 bg-blue-100 ring-2 ring-blue-200" : "border-slate-300 bg-white hover:border-blue-400 hover:bg-blue-50"}`}>Multiple Choice<span className="mt-1 block text-xs font-normal text-slate-500">Students select one answer or check all that apply.</span></button>
+                <button type="button" onClick={() => { setQuestionType("drag-and-drop"); setQuestionLayout("standard"); setLayoutSelectionMade(false); setDragDropData(createLocationDragDropData()); setQuestionBuilderStep(2); }} aria-pressed={questionBuilderStep >= 2 && questionType === "drag-and-drop"} className={`rounded-xl border px-4 py-4 text-left font-semibold text-black transition ${questionBuilderStep >= 2 && questionType === "drag-and-drop" ? "border-blue-500 bg-blue-100 ring-2 ring-blue-200" : "border-slate-300 bg-white hover:border-blue-400 hover:bg-blue-50"}`}>Drag &amp; Drop<span className="mt-1 block text-xs font-normal text-slate-500">Students move choices into targets on the canvas.</span></button>
+                <button type="button" onClick={() => { setQuestionType("sort-into-groups"); setQuestionLayout("standard"); setLayoutSelectionMade(false); setDragDropData(createCategoryCanvasData()); setQuestionBuilderStep(2); }} aria-pressed={questionBuilderStep >= 2 && questionType === "sort-into-groups"} className={`rounded-xl border px-4 py-4 text-left font-semibold text-black transition ${questionBuilderStep >= 2 && questionType === "sort-into-groups" ? "border-blue-500 bg-blue-100 ring-2 ring-blue-200" : "border-slate-300 bg-white hover:border-blue-400 hover:bg-blue-50"}`}>Sort into groups<span className="mt-1 block text-xs font-normal text-slate-500">Students sort choices into labelled category boxes.</span></button>
+                <button type="button" onClick={() => { setQuestionType("dropdown"); setQuestionLayout("standard"); setLayoutSelectionMade(false); setQuestionBuilderStep(2); }} aria-pressed={questionBuilderStep >= 2 && questionType === "dropdown"} className={`rounded-xl border px-4 py-4 text-left font-semibold text-black transition ${questionBuilderStep >= 2 && questionType === "dropdown" ? "border-blue-500 bg-blue-100 ring-2 ring-blue-200" : "border-slate-300 bg-white hover:border-blue-400 hover:bg-blue-50"}`}>Dropdown<span className="mt-1 block text-xs font-normal text-slate-500">Place independent answer menus anywhere on the canvas.</span></button>
+                <button type="button" onClick={() => { setQuestionType("fill-in-the-blank"); setQuestionLayout("standard"); setLayoutSelectionMade(false); setFillBlankData({ ...createDefaultFillBlankData(), template: "", blanks: [] }); setQuestionCanvas((current) => ({ ...current, interaction: undefined })); setQuestionBuilderStep(2); }} aria-pressed={questionBuilderStep >= 2 && questionType === "fill-in-the-blank"} className={`rounded-xl border px-4 py-4 text-left font-semibold text-black transition ${questionBuilderStep >= 2 && questionType === "fill-in-the-blank" ? "border-blue-500 bg-blue-100 ring-2 ring-blue-200" : "border-slate-300 bg-white hover:border-blue-400 hover:bg-blue-50"}`}>Fill in the Blank<span className="mt-1 block text-xs font-normal text-slate-500">Text, numbers, fractions, coordinates, or math expressions.</span></button>
               </div>
             </div>}
 
-            {questionBuilderStep >= 2 && <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
-              <div><p className="text-xs font-bold uppercase tracking-[0.16em] text-blue-600">Step 2 · Student layout</p><h3 className="mt-2 text-lg font-semibold text-slate-950">How should the student page be arranged?</h3></div>
-              <div className="mt-2 grid gap-3 sm:grid-cols-2">
-                <button
-                  type="button"
-                  onClick={() => { setQuestionLayout("standard"); setQuestionBuilderStep(questionType === "drag-and-drop" ? 3 : 4); }}
-                  aria-pressed={questionBuilderStep >= 3 && questionLayout === "standard"}
-                  className={`rounded-xl border p-4 text-left text-slate-900 transition ${questionBuilderStep >= 3 && questionLayout === "standard" ? "border-blue-500 bg-blue-100 ring-2 ring-blue-200" : "border-slate-300 bg-white hover:border-blue-400 hover:bg-blue-50"}`}
-                >
-                  <span className="block font-semibold">Standard</span>
-                  <span className="mt-1 block text-xs leading-5 text-slate-500">
-                    Show the question and response together in the answer area.
-                  </span>
-                  <span className="mt-3 block h-10 rounded-md border border-slate-300 bg-slate-100" />
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setQuestionLayout("split");
-                    setSplitEditorTab("left");
-                    setQuestionBuilderStep(questionType === "drag-and-drop" ? 3 : 4);
-                  }}
-                  aria-pressed={questionBuilderStep >= 3 && questionLayout === "split"}
-                  className={`rounded-xl border p-4 text-left text-slate-900 transition ${questionBuilderStep >= 3 && questionLayout === "split" ? "border-blue-500 bg-blue-100 ring-2 ring-blue-200" : "border-slate-300 bg-white hover:border-blue-400 hover:bg-blue-50"}`}
-                >
-                  <span className="block font-semibold">Left + Right Split</span>
-                  <span className="mt-1 block text-xs leading-5 text-slate-500">
-                    Put reference material on the left and the question on the right.
-                  </span>
-                  <span className="mt-3 grid h-10 grid-cols-2 gap-1">
-                    <span className="rounded-l-md border border-blue-300 bg-blue-100" />
-                    <span className="rounded-r-md border border-blue-300 bg-slate-100" />
-                  </span>
-                </button>
+            {questionBuilderStep >= 2 && <div className="rounded-2xl border border-violet-200 bg-violet-50 p-5">
+              <p className="text-xs font-bold uppercase tracking-[0.16em] text-violet-700">Step 2 · Student layout</p>
+              <h3 className="mt-2 text-lg font-semibold text-slate-950">How should the question be displayed?</h3>
+              <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-white p-1 ring-1 ring-violet-200">
+                <button type="button" aria-pressed={layoutSelectionMade && questionLayout === "standard"} onClick={() => { setQuestionLayout("standard"); setLayoutSelectionMade(true); setQuestionBuilderStep(questionType === "multiple-choice" ? multipleChoiceSelectionMode ? 4 : 3 : 4); }} className={`rounded-lg px-3 py-3 text-sm font-semibold transition ${layoutSelectionMade && questionLayout === "standard" ? "bg-violet-600 text-white" : "text-slate-700 hover:bg-violet-50"}`}>One canvas</button>
+                <button type="button" aria-pressed={layoutSelectionMade && questionLayout === "split"} onClick={() => { setQuestionLayout("split"); setSplitEditorTab("right"); setLayoutSelectionMade(true); setQuestionBuilderStep(questionType === "multiple-choice" ? multipleChoiceSelectionMode ? 4 : 3 : 4); }} className={`rounded-lg px-3 py-3 text-sm font-semibold transition ${layoutSelectionMade && questionLayout === "split" ? "bg-violet-600 text-white" : "text-slate-700 hover:bg-violet-50"}`}>Left and right split</button>
               </div>
             </div>}
 
-            {questionBuilderStep >= 3 && questionType === "drag-and-drop" && <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5">
-              <div className="mb-4"><p className="text-xs font-bold uppercase tracking-[0.16em] text-blue-600">Step 3 · Drag-and-drop layout</p><h3 className="mt-2 text-lg font-semibold text-slate-950">Choose how students will place their answers</h3></div>
-              <DragDropPresetPicker value={dragDropData} onChange={(nextData) => { setDragDropData(nextData); setQuestionBuilderStep(4); }} />
+            {questionBuilderStep >= 3 && questionType === "multiple-choice" && <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5">
+              <p className="text-xs font-bold uppercase tracking-[0.16em] text-emerald-700">Step 3 · Answer selection</p>
+              <h3 className="mt-2 text-lg font-semibold text-slate-950">How many answers can be correct?</h3>
+              <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-white p-1 ring-1 ring-emerald-200">
+                <button type="button" aria-pressed={multipleChoiceSelectionMode === "single"} onClick={() => { setMultipleChoiceSelectionMode("single"); const index = correctChoiceIndexes[0] ?? correctChoiceIndex; setCorrectChoiceIndex(index >= 0 ? index : -1); setCorrectChoiceIndexes(index >= 0 ? [index] : []); setQuestionBuilderStep(4); }} className={`rounded-lg px-3 py-3 text-sm font-semibold transition ${multipleChoiceSelectionMode === "single" ? "bg-emerald-600 text-white" : "text-slate-700 hover:bg-emerald-50"}`}>One answer</button>
+                <button type="button" aria-pressed={multipleChoiceSelectionMode === "multiple"} onClick={() => { setMultipleChoiceSelectionMode("multiple"); setCorrectChoiceIndexes((current) => current.length > 0 ? current : correctChoiceIndex >= 0 ? [correctChoiceIndex] : []); setQuestionCanvas((current) => ({ ...current, choiceLayout: current.choiceLayout ? { ...current.choiceLayout, presentation: "content" } : { grouped: true, direction: "vertical", presentation: "content", x: 8, y: 35, positions: [] } })); setQuestionBuilderStep(4); }} className={`rounded-lg px-3 py-3 text-sm font-semibold transition ${multipleChoiceSelectionMode === "multiple" ? "bg-emerald-600 text-white" : "text-slate-700 hover:bg-emerald-50"}`}>Multiple answers</button>
+              </div>
             </div>}
+
                 </div>
               </div>
             </div>
@@ -3097,264 +3795,60 @@ export default function AssessmentEditorPage({
 
             {questionBuilderStep === 4 && <>
             {questionLayout === "split" && (
-              <div className="grid grid-cols-2 rounded-xl border border-slate-700 bg-slate-950 p-1" role="tablist" aria-label="Split question editor">
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={splitEditorTab === "left"}
-                  onClick={() => setSplitEditorTab("left")}
-                  className={`rounded-lg px-4 py-3 text-sm font-bold transition ${splitEditorTab === "left" ? "bg-blue-600 text-white shadow-sm" : "text-slate-400 hover:bg-slate-800 hover:text-white"}`}
-                >
-                  Left side · Reference
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={splitEditorTab === "right"}
-                  onClick={() => setSplitEditorTab("right")}
-                  className={`rounded-lg px-4 py-3 text-sm font-bold transition ${splitEditorTab === "right" ? "bg-violet-600 text-white shadow-sm" : "text-slate-400 hover:bg-slate-800 hover:text-white"}`}
-                >
-                  Right side · Question
-                </button>
+              <div className="grid grid-cols-2 rounded-xl border border-slate-700 bg-slate-950 p-1" role="tablist" aria-label="Split question canvas editor">
+                <button type="button" role="tab" aria-selected={splitEditorTab === "left"} onClick={() => setSplitEditorTab("left")} className={`rounded-lg px-4 py-3 text-sm font-bold transition ${splitEditorTab === "left" ? "bg-blue-600 text-white shadow-sm" : "text-slate-400 hover:bg-slate-800 hover:text-white"}`}>Left-side canvas</button>
+                <button type="button" role="tab" aria-selected={splitEditorTab === "right"} onClick={() => setSplitEditorTab("right")} className={`rounded-lg px-4 py-3 text-sm font-bold transition ${splitEditorTab === "right" ? "bg-violet-600 text-white shadow-sm" : "text-slate-400 hover:bg-slate-800 hover:text-white"}`}>Right-side canvas</button>
               </div>
             )}
+            <LocationCanvasEditor
+              compositionOnly={editingLeftCanvas || (questionType !== "multiple-choice" && questionType !== "drag-and-drop" && questionType !== "sort-into-groups")}
+              choiceOnly={!editingLeftCanvas && questionType === "multiple-choice"}
+              allowChoiceMarkers={!editingLeftCanvas && multipleChoiceSelectionMode === "single"}
+              choiceSelectionMode={!editingLeftCanvas && questionType === "multiple-choice" ? multipleChoiceSelectionMode || undefined : undefined}
+              isChoiceCorrect={!editingLeftCanvas && questionType === "multiple-choice" ? (_, index) => multipleChoiceSelectionMode === "multiple" ? correctChoiceIndexes.includes(index) : correctChoiceIndex === index : undefined}
+              choicePlaceholder={(questionType === "drag-and-drop" || questionType === "sort-into-groups") ? "Item" : "Choice"}
+              title={editingLeftCanvas ? "Left-side canvas" : questionLayout === "split" ? "Right-side canvas" : "Question canvas"}
+              description={editingLeftCanvas ? "Build the reference side of the student layout." : (questionType === "drag-and-drop" || questionType === "sort-into-groups") ? "Build the complete question, draggable-item group, and targets on this canvas." : "Build the complete question and place its student interaction on the canvas."}
+              data={editingLeftCanvas ? questionCanvasToComposition(leftQuestionCanvas) : questionType === "multiple-choice" ? multipleChoiceCanvasData : (questionType === "drag-and-drop" || questionType === "sort-into-groups") ? dragDropData : questionCanvasToComposition(questionCanvas)}
+              onChange={(composition) => editingLeftCanvas ? setLeftQuestionCanvas((current) => ({ ...current, backgroundImageUrl: composition.backgroundImageUrl, backgroundImagePath: composition.backgroundImagePath, canvasHeight: normalizeCanvasHeight(composition.canvasHeight), elements: composition.canvasElements || [] })) : questionType === "multiple-choice" ? updateMultipleChoiceCanvas(composition) : (questionType === "drag-and-drop" || questionType === "sort-into-groups") ? setDragDropData(asLocationDragDropData(composition)) : setQuestionCanvas((current) => ({ ...current, backgroundImageUrl: composition.backgroundImageUrl, backgroundImagePath: composition.backgroundImagePath, canvasHeight: normalizeCanvasHeight(composition.canvasHeight), elements: composition.canvasElements || [] }))}
+              uploadedImages={uploadedImages}
+              itemPreviewUrls={questionType === "multiple-choice" ? Object.fromEntries(choiceIds.map((id, index) => [id, multipleChoiceImagePreviewUrls[index] || multipleChoiceImages[index]?.imageUrl || ""])) : (questionType === "drag-and-drop" || questionType === "sort-into-groups") ? dragDropItemPreviewUrls : {}}
+              choiceHtmlById={questionType === "multiple-choice" ? Object.fromEntries(choiceIds.map((id, index) => [id, choiceHtml[index] || ""])) : {}}
+              onChoiceHtmlChange={questionType === "multiple-choice" ? (itemId, html) => { const index = choiceIds.indexOf(itemId); if (index < 0) return; const text = richHtmlToPlainText(html); setChoiceHtml((current) => current.map((value, currentIndex) => currentIndex === index ? html : value)); setChoiceTexts((current) => current.map((value, currentIndex) => currentIndex === index ? text : value)); } : undefined}
+              onItemImageFileChange={(itemId, file) => { if ((questionType === "drag-and-drop" || questionType === "sort-into-groups")) { handleDragDropItemImageChange(itemId, file); return; } const index = choiceIds.indexOf(itemId); if (index >= 0) handleMultipleChoiceImageChange(index, file); }}
+              onChooseItemImage={(itemId, image) => { if ((questionType === "drag-and-drop" || questionType === "sort-into-groups")) { chooseDragDropItemImage(itemId, image); return; } const index = choiceIds.indexOf(itemId); if (index < 0) return; setMultipleChoiceImages((current) => current.map((value, currentIndex) => currentIndex === index ? { imageUrl: image.url, imagePath: image.path } : value)); setSelectedMultipleChoiceImageFiles((current) => { const next = { ...current }; delete next[index]; return next; }); setMultipleChoiceImagePreviewUrls((current) => ({ ...current, [index]: image.url })); }}
+              onRemoveItemImage={(itemId) => { if ((questionType === "drag-and-drop" || questionType === "sort-into-groups")) { removeDragDropItemImage(itemId); return; } const index = choiceIds.indexOf(itemId); if (index < 0) return; setMultipleChoiceImages((current) => current.map((value, currentIndex) => currentIndex === index ? { imageUrl: "", imagePath: "" } : value)); setSelectedMultipleChoiceImageFiles((current) => { const next = { ...current }; delete next[index]; return next; }); setMultipleChoiceImagePreviewUrls((current) => { const next = { ...current }; delete next[index]; return next; }); }}
+              onAddChoice={questionType === "multiple-choice" ? addMultipleChoiceOption : undefined}
+              onRemoveChoice={questionType === "multiple-choice" ? (_, index) => removeMultipleChoiceOption(index) : undefined}
+              renderChoiceEditorExtra={questionType === "multiple-choice" ? (_, index) => <label className="mt-3 flex cursor-pointer items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900"><input type="checkbox" checked={multipleChoiceSelectionMode === "multiple" ? correctChoiceIndexes.includes(index) : correctChoiceIndex === index} onChange={() => { if (multipleChoiceSelectionMode === "single") { setCorrectChoiceIndex(index); setCorrectChoiceIndexes([index]); } else setCorrectChoiceIndexes((current) => current.includes(index) ? current.filter((value) => value !== index) : [...current, index]); }} className="h-4 w-4 accent-emerald-600" />Correct answer</label> : undefined}
+              onUploadBackground={uploadDragDropBackgroundImage}
+              onDeleteUploadedImage={(image) => void deleteAccountImage({ id: image.id, image_url: image.url, image_path: image.path, label: image.label })}
+              toolbarActions={editingLeftCanvas || questionType === "multiple-choice" || (questionType === "drag-and-drop" || questionType === "sort-into-groups") ? undefined : questionType === "dropdown" ? <button type="button" onClick={addDropdownToCanvas} className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100">+ Add dropdown</button> : questionType === "fill-in-the-blank" ? <button type="button" onClick={addFillBlankToCanvas} className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100">+ Add answer area</button> : questionCanvas.interaction ? <button type="button" onClick={() => setQuestionCanvas((current) => ({ ...current, interaction: undefined }))} className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-100">Remove answer area</button> : <button type="button" onClick={() => setQuestionCanvas((current) => ({ ...current, interaction: { ...DEFAULT_INTERACTION } }))} className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100">+ Add answer area</button>}
+              overlayBlocks={editingLeftCanvas ? [] : questionType === "dropdown" ? dropdownData.entries.map((entry, index) => ({
+                id: entry.id,
+                label: `Dropdown ${index + 1}`,
+                bounds: getDropdownBounds(entry, index),
+                hideLabel: true,
+                content: <CanvasDropdownField disabled ariaLabel={`Dropdown ${index + 1}`} options={getDropdownEntryOptions(entry)} />,
+                editor: dropdownEditor(entry, index),
+              })) : questionType === "fill-in-the-blank" ? normalizeFillBlankData(fillBlankData).blanks.map((blank, index) => ({
+                id: blank.id,
+                label: `Answer area ${index + 1}`,
+                bounds: getFillBlankBounds(blank, index),
+                hideLabel: true,
+                content: <CanvasFillBlankField blank={blank} preview />,
+                editor: <FillBlankCanvasPanel blank={blank} onChange={(next) => updateFillBlank(blank.id, next)} onRemove={() => removeFillBlank(blank.id)} />,
+              })) : questionType !== "multiple-choice" && questionType !== "drag-and-drop" && questionType !== "sort-into-groups" && questionCanvas.interaction ? [
+                { id: "interaction", label: "Answer", bounds: questionCanvas.interaction, content: canvasResponsePreview },
+              ] : []}
+              onRemoveOverlay={(id) => questionType === "dropdown" ? setDropdownData((current) => ({ ...current, entries: current.entries.filter((entry) => entry.id !== id) })) : questionType === "fill-in-the-blank" ? removeFillBlank(id) : setQuestionCanvas((current) => ({ ...current, interaction: undefined }))}
+              onOverlayBoundsChange={(id, bounds) => questionType === "dropdown" ? updateDropdownEntry(id, bounds) : questionType === "fill-in-the-blank" ? updateFillBlank(id, bounds) : setQuestionCanvas((current) => ({ ...current, interaction: bounds }))}
+            />
 
             <div className="grid grid-cols-1 items-start gap-4 lg:gap-6">
-              {questionLayout === "split" && splitEditorTab === "left" && (
-              <section className="min-w-0">
-                  <div>
-                <div className="rounded-xl border border-blue-200 bg-blue-50 p-3">
-                  <label className="block text-xs font-bold uppercase tracking-wider text-blue-800">
-                    Reuse a saved reference
-                  </label>
-                  <div className="mt-2 flex flex-col gap-2 sm:flex-row">
-                    <select
-                      value={selectedReferenceQuestionId}
-                      onChange={(event) => reuseSavedReference(event.target.value)}
-                      className="min-w-0 flex-1 rounded-lg border border-blue-300 bg-white px-3 py-2 text-sm text-slate-900"
-                    >
-                      <option value="">Build a new reference</option>
-                      {referenceBuilds.map((reference) => (
-                        <option key={reference.id} value={reference.id}>
-                          {reference.name}
-                        </option>
-                      ))}
-                    </select>
-                    {selectedReferenceQuestionId && (
-                      <button type="button" onClick={() => void deleteSelectedReferenceBuild()} disabled={deletingReferenceBuild} className="rounded-lg border border-red-300 bg-white px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50">
-                        {deletingReferenceBuild ? "Deleting..." : "Delete saved reference"}
-                      </button>
-                    )}
-                  </div>
-                  <p className="mt-2 text-xs leading-5 text-blue-700">
-                    Your saved references are available in every assessment. Editing a reused reference automatically switches this editor to Build a new reference.
-                  </p>
-                </div>
-                <p className="mt-1 text-xs leading-5 text-slate-400">
-                  Add a title, supporting image, and reference text. Each field is optional.
-                </p>
-                <label className="mt-4 block text-xs font-semibold uppercase tracking-wider text-slate-400">
-                  Title
-                </label>
-                <input
-                  className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white"
-                  value={leftPanelTitle}
-                  onChange={(event) => { setSelectedReferenceQuestionId(""); setLeftPanelTitle(event.target.value); }}
-                  placeholder="Example: Some Facts About Giant Canada Geese"
-                />
-
-                <label className="mt-4 block text-xs font-semibold uppercase tracking-wider text-slate-400">
-                  Text above image
-                </label>
-                <RichTextEditor
-                  value={leftPanelTopContent}
-                  onChange={(value) => { setSelectedReferenceQuestionId(""); setLeftPanelTopContent(value); }}
-                  placeholder="Add introductory text that appears before the image..."
-                  minHeight="7rem"
-                />
-
-                <label className="mt-4 block text-xs font-semibold uppercase tracking-wider text-slate-400">
-                  Image
-                </label>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(event) =>
-                    handleLeftPanelImageChange(event.target.files?.[0] || null)
-                  }
-                  className="mt-2 block w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-slate-300 file:mr-4 file:rounded-lg file:border-0 file:bg-blue-600 file:px-3 file:py-2 file:font-semibold file:text-white hover:file:bg-blue-500"
-                />
-                <button
-                  type="button"
-                  onClick={() =>
-                    setShowUploadedImagePicker((current) => !current)
-                  }
-                  className="mt-2 inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:border-blue-600 hover:bg-blue-950/40 hover:text-blue-200"
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4" aria-hidden="true">
-                    <rect x="3" y="4" width="18" height="16" rx="2" />
-                    <circle cx="9" cy="10" r="2" />
-                    <path strokeLinecap="round" strokeLinejoin="round" d="m21 15-5-5L5 20" />
-                  </svg>
-                  {showUploadedImagePicker ? "Close uploaded images" : "Select from uploaded"}
-                </button>
-
-                {showUploadedImagePicker && (
-                  <div className="mt-3 rounded-xl border border-slate-700 bg-slate-950 p-3">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                      Uploaded in this assessment
-                    </p>
-                    {uploadedImages.length === 0 ? (
-                      <p className="mt-3 text-sm text-slate-500">
-                        No previously uploaded images are available yet.
-                      </p>
-                    ) : (
-                      <div className="mt-3 grid max-h-80 grid-cols-2 gap-3 overflow-y-auto sm:grid-cols-3">
-                        {uploadedImages.map((image) => {
-                          const selected =
-                            leftPanelImagePreviewUrl === image.url;
-
-                          return (
-                            <div key={image.url} className="group relative">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                setSelectedReferenceQuestionId("");
-                                setSelectedLeftPanelImageFile(null);
-                                setExistingLeftPanelImageUrl(image.url);
-                                setExistingLeftPanelImagePath(image.path);
-                                setLeftPanelImagePreviewUrl(image.url);
-                                setShowUploadedImagePicker(false);
-                              }}
-                                className={`w-full overflow-hidden rounded-lg border p-2 text-left transition ${selected ? "border-blue-500 bg-blue-950/50 ring-2 ring-blue-500/20" : "border-slate-700 bg-slate-900 hover:border-slate-500"}`}
-                              >
-                                <img src={image.url} alt={image.label} className="h-24 w-full rounded-md bg-white object-contain" />
-                                <span className="mt-2 block truncate text-xs text-slate-300">{image.label}</span>
-                              </button>
-                              {image.id && <button type="button" onClick={() => void deleteAccountImage({ id: image.id!, image_url: image.url, image_path: image.path, label: image.label })} className="absolute right-1.5 top-1.5 grid h-7 w-7 place-items-center rounded-full bg-red-600 text-sm font-bold text-white opacity-0 shadow-md transition hover:bg-red-700 focus:opacity-100 group-hover:opacity-100" aria-label={`Delete ${image.label} from existing uploads`}>×</button>}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                )}
-                {leftPanelImagePreviewUrl && (
-                  <div className="mt-3 rounded-xl border border-slate-700 bg-slate-950 p-3">
-                    <img
-                      src={leftPanelImagePreviewUrl}
-                      alt="Left panel preview"
-                      className="max-h-64 w-full rounded-lg object-contain"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedReferenceQuestionId("");
-                        setSelectedLeftPanelImageFile(null);
-                        setExistingLeftPanelImageUrl("");
-                        setExistingLeftPanelImagePath("");
-                        setLeftPanelImagePreviewUrl("");
-                      }}
-                      className="mt-3 text-sm font-semibold text-red-300 hover:text-red-200"
-                    >
-                      Remove image
-                    </button>
-                  </div>
-                )}
-
-                <label className="mt-4 block text-xs font-semibold uppercase tracking-wider text-slate-400">
-                  Text below image
-                </label>
-                <RichTextEditor
-                  value={leftPanelContent}
-                  onChange={(value) => { setSelectedReferenceQuestionId(""); setLeftPanelContent(value); }}
-                  placeholder="Add captions, facts, or reference text that appears after the image..."
-                />
-                <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 p-3">
-                  <label className="block text-xs font-bold uppercase tracking-wider text-emerald-800">
-                    Save to reference library
-                  </label>
-                  <p className="mt-1 text-xs leading-5 text-emerald-700">
-                    Saving the question does not add this reference to your library.
-                  </p>
-                  <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-                    <input
-                      value={referenceBuildName}
-                      onChange={(event) => setReferenceBuildName(event.target.value)}
-                      placeholder="Reference name"
-                      className="min-w-0 flex-1 rounded-lg border border-emerald-300 bg-white px-3 py-2 text-sm text-slate-900"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => void saveReferenceBuild()}
-                      disabled={savingReferenceBuild || !referenceBuildName.trim()}
-                      className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {savingReferenceBuild ? "Saving..." : "Save reference build"}
-                    </button>
-                  </div>
-                </div>
-                  </div>
-              </section>
-              )}
-
               <section className={`min-w-0 ${questionLayout === "split" && splitEditorTab !== "right" ? "hidden" : ""}`}>
 
-            <div>
-              <label className="text-base font-semibold text-slate-200">
-                {questionType === "fill-in-the-blank"
-                  ? "Question Prompt with Blanks"
-                  : "Question Prompt"}
-              </label>
-              {questionType === "fill-in-the-blank" ? (
-                <textarea
-                  className="mt-1 min-h-24 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white"
-                  value={prompt}
-                  onChange={(event) => setPrompt(event.target.value)}
-                  placeholder="Example: A triangle has [[3]] sides and angle sum [[180]] degrees."
-                />
-              ) : (
-                <RichTextEditor
-                  value={promptHtml}
-                  onChange={updateRichPrompt}
-                  placeholder={
-                    questionType === "image-question"
-                      ? "Example: Label the image by typing or dragging answers into the boxes."
-                      : questionType === "sorting-order"
-                      ? "Example: Put these numbers in order from smallest to largest."
-                      : questionType === "sorting-category"
-                      ? "Example: Sort each item into the correct category."
-                      : "Example: Solve the following question."
-                  }
-                  minHeight="7rem"
-                />
-              )}
-
-              <hr className="my-5 border-slate-700" />
-
-              {questionType === "fill-in-the-blank" && (
-                <div className="mt-3 rounded-xl border border-blue-900 bg-blue-950/30 p-4 text-sm text-blue-100">
-                  <p className="font-semibold">How to make blanks:</p>
-                  <p className="mt-1">
-                    Put the correct answer inside double square brackets.
-                  </p>
-                  <p className="mt-2 font-mono text-blue-200">
-                    Example: The answer is [[56]].
-                  </p>
-
-                  <p className="mt-3 text-slate-300">Student preview:</p>
-                  <p className="mt-1 rounded-lg bg-slate-950 p-3">
-                    {prompt.trim()
-                      ? makeStudentPreview(prompt)
-                      : "Your preview will appear here."}
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {questionType === "drag-and-drop" && <DragDropEditor value={dragDropData} onChange={setDragDropData} uploadedImages={uploadedImages} itemPreviewUrls={dragDropItemPreviewUrls} onItemImageFileChange={handleDragDropItemImageChange} onChooseItemImage={chooseDragDropItemImage} onRemoveItemImage={removeDragDropItemImage} onUploadBackground={uploadDragDropBackgroundImage} onDeleteUploadedImage={(image) => void deleteAccountImage({ id: image.id, image_url: image.url, image_path: image.path, label: image.label })} />}
-
-            {questionType === "multiple-choice" && (
+            {questionType === "multiple-choice" && choiceTableEnabled && (
               <>
                 <div className="my-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
                   <label className="flex cursor-pointer items-start gap-3">
@@ -3437,6 +3931,7 @@ export default function AssessmentEditorPage({
                           <div className="min-w-0">
                             <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Choice text</p>
                             <RichTextEditor
+                              allowNumberLines
                               value={choiceHtml[index] || ""}
                               onChange={(html) => {
                                 setChoiceHtml((current) => current.map((item, itemIndex) => itemIndex === index ? html : item));
@@ -3465,20 +3960,27 @@ export default function AssessmentEditorPage({
                 <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 shadow-sm">
                   <label className="flex items-center gap-2 text-sm font-bold text-emerald-900">
                     <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-600 text-xs text-white">✓</span>
-                    Correct Answer
+                    Answer selection
                   </label>
-                  <p className="mt-1 text-xs text-emerald-700">Choose the option students must select to receive the mark.</p>
-                  <select
-                    className="mt-3 w-full rounded-xl border border-emerald-300 bg-white px-4 py-3 font-semibold text-slate-900 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200"
-                    value={correctChoiceIndex}
-                    onChange={(event) => setCorrectChoiceIndex(Number(event.target.value))}
-                  >
-                    {choiceTexts.map((choice, index) => (
-                      <option key={index} value={index}>
-                        Choice {String.fromCharCode(65 + index)}{choice.trim() ? ` — ${choice.trim()}` : ""}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-white p-1 ring-1 ring-emerald-200">
+                    <button type="button" onClick={() => { setMultipleChoiceSelectionMode("single"); const index = correctChoiceIndexes[0] ?? correctChoiceIndex; setCorrectChoiceIndex(index); setCorrectChoiceIndexes([index]); }} className={`rounded-lg px-3 py-2 text-sm font-semibold transition ${multipleChoiceSelectionMode === "single" ? "bg-emerald-600 text-white" : "text-slate-700 hover:bg-emerald-50"}`}>One answer</button>
+                    <button type="button" onClick={() => { setMultipleChoiceSelectionMode("multiple"); setCorrectChoiceIndexes((current) => current.length > 0 ? current : correctChoiceIndex >= 0 ? [correctChoiceIndex] : []); setQuestionCanvas((current) => ({ ...current, choiceLayout: current.choiceLayout ? { ...current.choiceLayout, presentation: "content" } : { grouped: true, direction: "vertical", presentation: "content", x: 8, y: 35, positions: [] } })); }} className={`rounded-lg px-3 py-2 text-sm font-semibold transition ${multipleChoiceSelectionMode === "multiple" ? "bg-emerald-600 text-white" : "text-slate-700 hover:bg-emerald-50"}`}>Multiple answers</button>
+                  </div>
+                  <p className="mt-2 text-xs text-emerald-700">{multipleChoiceSelectionMode === "multiple" ? "Check every answer students must select. Students receive the mark only for the exact set." : "Choose the one answer students must select."}</p>
+                  {multipleChoiceSelectionMode === "single" ? (
+                    <select className="mt-3 w-full rounded-xl border border-emerald-300 bg-white px-4 py-3 font-semibold text-slate-900 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200" value={correctChoiceIndex} onChange={(event) => { const index = Number(event.target.value); setCorrectChoiceIndex(index); setCorrectChoiceIndexes([index]); }}>
+                      {choiceTexts.map((choice, index) => <option key={index} value={index}>Choice {String.fromCharCode(65 + index)}{choice.trim() ? ` — ${choice.trim()}` : ""}</option>)}
+                    </select>
+                  ) : (
+                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                      {choiceTexts.map((choice, index) => (
+                        <label key={index} className="flex cursor-pointer items-start gap-3 rounded-xl border border-emerald-200 bg-white px-3 py-3 text-sm text-slate-900 hover:bg-emerald-50">
+                          <input type="checkbox" checked={correctChoiceIndexes.includes(index)} onChange={() => setCorrectChoiceIndexes((current) => current.includes(index) ? current.filter((value) => value !== index) : [...current, index])} className="mt-0.5 h-5 w-5 accent-emerald-600" />
+                          <span><span className="font-semibold">Choice {String.fromCharCode(65 + index)}</span>{choice.trim() && <span className="ml-1 text-slate-600">— {choice.trim()}</span>}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <hr className="my-5 border-slate-700" />
               </>
@@ -4288,272 +4790,78 @@ export default function AssessmentEditorPage({
             </div>
             </>}
 
-            <div className="mt-8 overflow-hidden rounded-2xl border border-slate-700 bg-white text-slate-900 shadow-xl">
-                <div className="border-b border-slate-200 bg-slate-50 px-5 py-3">
+            <div className="relative isolate z-0 mt-10 overflow-hidden rounded-2xl border-2 border-indigo-300 bg-indigo-50 p-3 text-slate-900 shadow-xl ring-4 ring-indigo-100/60">
+                <div className="mb-3 flex items-center gap-3 rounded-xl bg-indigo-950 px-5 py-4 text-white">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-6 w-6 shrink-0 text-indigo-200" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" /><circle cx="12" cy="12" r="3" /></svg>
                   <div>
-                    <p className="text-xs font-bold uppercase tracking-[0.16em] text-blue-600">
-                      Student layout preview
-                    </p>
+                    <h3 className="text-base font-bold">Student layout preview</h3>
+                    <p className="mt-1 text-sm text-indigo-200">See how your question will appear to students. Make changes in the canvas above.</p>
                   </div>
+                  <span className="ml-auto rounded-full border border-indigo-400/50 bg-indigo-800 px-3 py-1 text-xs font-bold uppercase tracking-wider">Preview</span>
                 </div>
 
-                <div className={`grid min-h-96 ${questionLayout === "split" ? "lg:grid-cols-2" : "grid-cols-1"}`}>
-                  {questionLayout === "split" && (
-                  <div className="border-b border-slate-200 bg-slate-50/70 p-6 lg:border-b-0 lg:border-r">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                      Reference material
-                    </p>
-                    {leftPanelTitle.trim() && (
-                      <h3 className="mt-3 text-2xl font-bold">{leftPanelTitle.trim()}</h3>
-                    )}
-                    {leftPanelTopContent.trim() && (
-                      <div
-                        className="rich-text-content mt-4 text-slate-700"
-                        dangerouslySetInnerHTML={{ __html: leftPanelTopContent }}
-                      />
-                    )}
-                    {leftPanelImagePreviewUrl && (
-                      <img
-                        src={leftPanelImagePreviewUrl}
-                        alt="Left panel preview"
-                        className="mt-5 max-h-72 w-full rounded-xl border border-slate-200 bg-white object-contain p-2"
-                      />
-                    )}
-                    {leftPanelContent.trim() && (
-                      <div
-                        className="rich-text-content mt-4 text-slate-700"
-                        dangerouslySetInnerHTML={{ __html: leftPanelContent }}
-                      />
-                    )}
-                    {leftPanelTableEnabled &&
-                      leftPanelTableCells.some((row) =>
-                        row.some((cell) => cell.trim().length > 0)
-                      ) && (
-                      <div className="mt-5 overflow-x-auto">
-                        <table
-                          className={`w-full border-collapse text-left text-sm ${
-                            leftPanelTableHasBorder
-                              ? "border border-slate-300"
-                              : ""
-                          }`}
-                        >
-                          <tbody>
-                            {leftPanelTableCells.map((row, rowIndex) => (
-                              <tr key={rowIndex}>
-                                {row.map((cell, columnIndex) => {
-                                  const Cell = rowIndex === 0 ? "th" : "td";
-                                  return (
-                                    <Cell
-                                      key={columnIndex}
-                                      className={`px-3 py-2 ${
-                                        rowIndex === 0 ? "font-semibold" : ""
-                                      } ${
-                                        leftPanelTableHasBorder
-                                          ? "border border-slate-300"
-                                          : ""
-                                      }`}
-                                    >
-                                      {cell}
-                                    </Cell>
-                                  );
-                                })}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </div>
-                  )}
-
-                  <div className="p-6">
-                    {prompt.trim() && (
-                      questionType === "fill-in-the-blank" ? (
-                        <h3 className="text-xl font-semibold leading-8">{makeStudentPreview(prompt.trim())}</h3>
-                      ) : promptHtml.trim() ? (
-                        <div className="rich-text-content text-xl leading-8" dangerouslySetInnerHTML={{ __html: promptHtml }} />
-                      ) : null
-                    )}
-
-                    {questionType === "multiple-choice" && choiceTableEnabled ? (
-                      <ChoiceTablePreview table={{ enabled: true, headers: choiceTableHeaders, rows: choiceTableRows, hasBorder: choiceTableHasBorder, cellImages: choiceTableRows.map((row, rowIndex) => row.map((_, columnIndex) => ({ imageUrl: choiceTableCellPreviewUrls[`${rowIndex}-${columnIndex}`] || choiceTableCellImages[rowIndex]?.[columnIndex]?.imageUrl || "", imagePath: choiceTableCellImages[rowIndex]?.[columnIndex]?.imagePath || "" }))) }} />
-                    ) : questionType === "multiple-choice" && (
-                      <div className={`mt-6 grid w-fit max-w-full ${multipleChoicePreviewHasImages ? "grid-cols-1 gap-4 sm:grid-cols-2" : "grid-cols-[fit-content(32rem)] gap-3"}`}>
-                        {choiceTexts.map((choice, index) => (
-                          (choice.trim() || multipleChoiceImagePreviewUrls[index] || multipleChoiceImages[index]?.imageUrl) &&
-                          <div key={index} className={`w-full rounded-xl border-2 border-slate-200 text-slate-700 ${multipleChoicePreviewHasImages ? "max-w-[22rem] p-4" : "max-w-full px-5 py-3"}`}>
-                            {(multipleChoiceImagePreviewUrls[index] ||
-                              multipleChoiceImages[index]?.imageUrl) && (
-                              <img
-                                src={
-                                  multipleChoiceImagePreviewUrls[index] ||
-                                  multipleChoiceImages[index]?.imageUrl
-                                }
-                                alt={choice || `Choice ${String.fromCharCode(65 + index)}`}
-                                className="mx-auto mb-3 h-auto max-h-72 w-auto max-w-full rounded-lg object-contain"
-                              />
-                            )}
-                            {choiceHtml[index] ? <div className="rich-text-content" dangerouslySetInnerHTML={{ __html: choiceHtml[index] }} /> : choice.trim()}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {questionType === "drag-and-drop" && (
-                      <div className="mt-6 space-y-5">
-                        <div>
-                          <p className="mb-2 text-xs font-bold uppercase tracking-[0.14em] text-slate-500">
-                            Choices
-                          </p>
-                          {dragDropData.preset !== "sequence" && dragDropData.preset !== "locations" && <div className={`flex flex-wrap gap-3 ${dragDropData.preset === "categories" ? "justify-center" : ""}`}>
-                            {dragDropData.items.map((item) => (
-                              <div
-                                key={item.id}
-                                style={dragDropData.preset === "locations" ? getLocationBoxSize(dragDropData.items.map((current) => ({ ...current, imageUrl: dragDropItemPreviewUrls[current.id] || current.imageUrl }))) : undefined}
-                                className={`${dragDropData.preset === "categories" ? "min-w-32 rounded-none border-slate-500 px-4 py-2.5 text-center font-serif font-semibold" : dragDropData.preset === "locations" ? "flex shrink-0 flex-col items-center justify-center rounded border-slate-400 px-3 py-2 text-center text-sm font-medium shadow-sm" : "rounded-lg border-slate-300 px-4 py-3 text-sm font-medium shadow-sm"} box-border border bg-white text-slate-900`}
-                              >
-                                {(dragDropItemPreviewUrls[item.id] || item.imageUrl) && (
-                                  <img
-                                    src={dragDropItemPreviewUrls[item.id] || item.imageUrl}
-                                    alt=""
-                                    className="mb-2 max-h-24 max-w-32 object-contain"
-                                  />
-                                )}
-                                {item.content || "Untitled item"}
-                              </div>
-                            ))}
-                          </div>}
-                        </div>
-
-                        {dragDropData.preset === "sequence" ? (
-                          <SequencePreview data={dragDropData} itemPreviewUrls={dragDropItemPreviewUrls} />
-                        ) : dragDropData.preset === "locations" ? (
-                          <LocationPreview data={dragDropData} itemPreviewUrls={dragDropItemPreviewUrls} />
-                        ) : <div
-                          className={`grid ${
-                            dragDropData.preset === "categories"
-                              ? "gap-2 sm:grid-cols-2"
-                              : "gap-4 sm:grid-cols-2"
-                          }`}
-                        >
-                          {dragDropData.zones.map((zone, zoneIndex) => (
-                            <div
-                              key={zone.id}
-                              className={dragDropData.preset === "categories" ? "min-h-52 rounded-none border border-slate-500 bg-white" : "min-h-28 rounded-xl border-2 border-dashed border-blue-300 bg-blue-50/50 p-4"}
-                            >
-                              <p className={dragDropData.preset === "categories" ? "border-b border-slate-500 px-4 py-2 text-center font-serif font-semibold text-slate-900" : "font-semibold text-blue-900"}>
-                                {zone.label ||
-                                  (dragDropData.preset === "categories"
-                                    ? `Category ${zoneIndex + 1}`
-                                    : `Position ${zoneIndex + 1}`)}
-                              </p>
-                              {dragDropData.preset !== "categories" && (
-                                <p className="mt-2 text-xs text-blue-700">
-                                  Students drop choices here
-                                </p>
-                              )}
-                            </div>
-                          ))}
-                        </div>}
-                      </div>
-                    )}
-
-                    {questionType === "short-answer" && (
-                      <div className="mt-6 space-y-4">
-                        {answerBoxes.map((box, index) => (
-                          <label key={box.id} className="block text-sm font-medium text-slate-600">
-                            {box.label.trim() || `Answer ${index + 1}`}
-                            <span className="mt-2 block h-12 rounded-xl border border-slate-300 bg-white" />
-                          </label>
-                        ))}
-                      </div>
-                    )}
-
-                    {questionType === "fill-in-the-blank" && (
-                      <div className="mt-6 flex flex-wrap gap-3">
-                        {extractBlanksFromTemplate(prompt).map((blank, index) => (
-                          <span key={blank.id} className="h-11 w-32 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-400">
-                            Blank {index + 1}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-
-                    {questionType === "sorting-order" && (
-                      <div className="mt-6 space-y-2">
-                        {sortingItems.filter(sortingItemHasContent).map((item, index) => (
-                          <div key={item.id} className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-100 font-bold text-blue-700">{index + 1}</span>
-                            <span className="font-medium">{getSortingItemDisplayLabel(item, `Item ${index + 1}`)}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {questionType === "sorting-category" && (
-                      <div className="mt-6 grid gap-3 sm:grid-cols-2">
-                        {sortingCategories.filter((category) => category.name.trim()).map((category) => (
-                          <div key={category.id} className="min-h-24 rounded-xl border-2 border-dashed border-blue-200 bg-blue-50/40 p-3 font-semibold text-blue-800">
-                            {category.name.trim()}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {questionType === "image-question" && (
-                      <div className="mt-6">
-                        {imagePreviewUrl ? (
-                          <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
-                            <img src={imagePreviewUrl} alt="Question preview" className="w-full object-contain" />
-                            {overlayBoxes.map((box) => (
-                              <span
-                                key={box.id}
-                                className="absolute flex items-center justify-center rounded border-2 border-blue-500 bg-white/90 px-1 text-[10px] font-semibold text-blue-700"
-                                style={{ left: `${box.x}%`, top: `${box.y}%`, width: `${box.width}%`, height: `${box.height}%` }}
-                              >
-                                {box.label || "Answer"}
-                              </span>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    )}
-                  </div>
+                <div className="overflow-hidden rounded-lg border border-indigo-200 bg-white">
+                {questionLayout === "split" ? <div className="grid grid-cols-2">
+                  <div className="flex min-w-0 items-start border-r border-slate-200"><QuestionCanvas canvas={leftQuestionCanvas} className="w-full" /></div>
+                  <div className="flex min-w-0 items-start">{rightCanvasPreview}</div>
+                </div> : rightCanvasPreview}
                 </div>
               </div>
 
             {questionBuilderStep === 4 && <div className="flex flex-wrap gap-3">
               {editingQuestionId ? (
                 <>
-                  <button
-                    onClick={updateQuestion}
-                    disabled={uploadingImage}
-                    className="rounded-xl bg-green-600 px-6 py-3 font-semibold text-white hover:bg-green-500 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {uploadingImage ? "Uploading..." : "Update Question"}
-                  </button>
+                  <span className="group relative inline-flex" title={saveDisabledReason || "Update question"}>
+                    <button
+                      type="button"
+                      onClick={() => void publishQuestion()}
+                      disabled={Boolean(saveDisabledReason)}
+                      aria-describedby={saveDisabledReason ? "question-save-disabled-reason" : undefined}
+                      className="rounded-xl bg-green-600 px-6 py-3 font-semibold text-white hover:bg-green-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {uploadingImage ? "Uploading..." : "Publish changes"}
+                    </button>
+                    {saveDisabledReason && <span id="question-save-disabled-reason" role="tooltip" className="pointer-events-none absolute bottom-full left-0 z-50 mb-2 hidden w-max max-w-xs rounded-lg bg-slate-950 px-3 py-2 text-left text-xs font-medium text-white shadow-xl group-hover:block group-focus-within:block">{saveDisabledReason}</span>}
+                  </span>
 
                   <button
-                    onClick={resetQuestionForm}
+                    onClick={() => void closeQuestionEditor()}
                     className="rounded-xl border border-slate-700 px-6 py-3 font-semibold text-slate-200 hover:bg-slate-800"
                   >
-                    Cancel Edit
+                    Close editor
                   </button>
                 </>
               ) : (
-                <button
-                  onClick={addQuestion}
-                  disabled={uploadingImage}
-                  className="rounded-xl bg-blue-500 px-6 py-3 font-semibold text-white hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {uploadingImage ? "Uploading..." : "Save Question"}
-                </button>
+                <span className="group relative inline-flex" title={saveDisabledReason || "Save question"}>
+                  <button
+                    type="button"
+                    onClick={() => void publishQuestion()}
+                    disabled={Boolean(saveDisabledReason)}
+                    aria-describedby={saveDisabledReason ? "question-save-disabled-reason" : undefined}
+                    className="rounded-xl bg-blue-500 px-6 py-3 font-semibold text-white hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {uploadingImage ? "Uploading..." : "Publish question"}
+                  </button>
+                  {saveDisabledReason && <span id="question-save-disabled-reason" role="tooltip" className="pointer-events-none absolute bottom-full left-0 z-50 mb-2 hidden w-max max-w-xs rounded-lg bg-slate-950 px-3 py-2 text-left text-xs font-medium text-white shadow-xl group-hover:block group-focus-within:block">{saveDisabledReason}</span>}
+                </span>
               )}
             </div>}
           </div>
           </section>
         </div>
         )}
+
+        {questionDrafts.records.length > 0 && <section className="mt-8 rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <h2 className="font-semibold text-slate-900">Draft questions</h2>
+          <p className="mt-1 text-sm text-slate-600">Drafts are private and are not shown to students.</p>
+          <div className="mt-3 space-y-2">{questionDrafts.records.map((draft, index) => <div key={draft.id} className="flex items-center justify-between gap-3 rounded-lg bg-white p-3">
+            <div><span className="mr-2 rounded bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-800">Draft</span><span className="text-sm text-slate-800">{draft.question_id ? "Unpublished question edits" : `Question draft ${index + 1}`} · {String(draft.snapshot.questionType || "Question")}</span><p className="mt-1 text-xs text-slate-500">Saved {new Date(draft.updated_at).toLocaleString()}</p></div>
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              <button type="button" onClick={() => void resumeQuestionDraft(draft)} className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white">Resume draft</button>
+              <button type="button" onClick={() => void deleteQuestionDraft(draft)} className="rounded-lg border border-red-200 px-3 py-2 text-sm font-semibold text-red-600 hover:bg-red-50">Delete draft</button>
+            </div>
+          </div>)}</div>
+        </section>}
 
         <section className="mt-8">
           {questions.length === 0 ? (
@@ -4628,7 +4936,7 @@ export default function AssessmentEditorPage({
                       </button>
                       <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-600 transition-transform ${expandedQuestionIds.includes(question.id) ? "rotate-90" : ""}`}>›</span>
                       <span className="min-w-0">
-                        <span className="block text-sm font-semibold text-slate-900">Question {index + 1}</span>
+                        <span className="block text-sm font-semibold text-slate-900">Question {index + 1} <span className="ml-2 rounded bg-emerald-100 px-2 py-0.5 text-xs text-emerald-800">Published</span></span>
                         <span className="mt-0.5 block truncate text-sm text-slate-500">{question.prompt}</span>
                       </span>
                     </div>
@@ -4675,6 +4983,10 @@ export default function AssessmentEditorPage({
                         Question {index + 1} ·{" "}
                         {question.question_type === "multiple-choice"
                           ? "Multiple Choice"
+                          : (question.question_type === "drag-and-drop" || question.question_type === "sort-into-groups")
+                          ? (question.question_type === "sort-into-groups" ? "Sort into groups" : "Drag & Drop")
+                          : question.question_type === "dropdown"
+                          ? "Dropdown"
                           : question.question_type === "short-answer"
                           ? "Short Answer"
                           : question.question_type === "fill-in-the-blank"
@@ -4734,15 +5046,15 @@ export default function AssessmentEditorPage({
 
                       {question.question_type === "fill-in-the-blank" && (
                         <div className="mt-4 space-y-2">
-                          <p className="text-sm text-slate-400">
-                            Original template:
-                          </p>
-                          <p className="rounded-xl border border-slate-700 bg-slate-950 p-3 font-mono text-slate-200">
-                            {question.question_data.template}
-                          </p>
+                          <div className="rounded-xl border border-slate-300 bg-white p-3 text-slate-950">
+                            <FillBlankQuestion
+                              preview
+                              data={normalizeFillBlankData(question.question_data.fillBlank, question.question_data.template, question.question_data.blanks)}
+                            />
+                          </div>
 
                           <div className="mt-3 space-y-2">
-                            {question.question_data.blanks?.map(
+                            {normalizeFillBlankData(question.question_data.fillBlank, question.question_data.template, question.question_data.blanks).blanks.map(
                               (blank, blankIndex) => (
                                 <div
                                   key={blank.id}

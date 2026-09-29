@@ -16,10 +16,6 @@ export default function ProfilePage() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  useEffect(() => {
-    void loadProfile();
-  }, []);
-
   async function loadProfile() {
     const {
       data: { user },
@@ -27,7 +23,7 @@ export default function ProfilePage() {
 
     if (!user) {
       window.location.replace("/login");
-      return;
+      return null;
     }
 
     const { data, error } = await supabase
@@ -38,12 +34,23 @@ export default function ProfilePage() {
 
     if (error || !data) {
       alert(error?.message || "Profile not found.");
-      return;
+      return null;
     }
 
-    setProfile(data as Profile);
-    setName(data.full_name || "");
+    return data as Profile;
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadProfile().then((loadedProfile) => {
+      if (cancelled || !loadedProfile) return;
+      setProfile(loadedProfile);
+      setName(loadedProfile.full_name || "");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function saveProfile() {
     const nextName = name.trim();

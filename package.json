@@ -9,7 +9,7 @@
     "lint": "eslint",
     "test:billing": "node --conditions=react-server --import tsx --test tests/teacher-billing.test.ts tests/teacher-routes.test.ts",
     "test:assessment-live": "node --import tsx --test tests/assessment-live-sessions.test.ts tests/assessment-presence.test.ts tests/lockdown-monitor.test.ts",
-    "test:student": "node --import tsx --test tests/student-classrooms.test.ts tests/student-name-sort.test.ts tests/drag-drop-sequence.test.ts tests/question-types-migration.test.ts tests/account-image-library.test.ts",
+    "test:student": "node --import tsx --test tests/student-classrooms.test.ts tests/student-name-sort.test.ts tests/drag-drop-sequence.test.ts tests/dropdown-question.test.ts tests/fill-blank.test.ts tests/multiple-choice.test.ts tests/choice-number-line.test.ts tests/question-canvas.test.ts tests/question-types-migration.test.ts tests/account-image-library.test.ts tests/private-image-access.test.ts tests/math-expression-tree.test.ts",
     "test:signup": "playwright test"
   },
   "dependencies": {
@@ -17,6 +17,7 @@
     "@stripe/stripe-js": "^9.15.0",
     "@supabase/supabase-js": "^2.108.1",
     "next": "16.2.9",
+    "pdfjs-dist": "^5.6.205",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "server-only": "^0.0.1",

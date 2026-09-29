@@ -195,10 +195,63 @@ a:focus-visible {
 }
 
 .rich-text-content math[data-math-expression] {
-  display: inline-block;
+  font-family: "STIX Two Math", "Cambria Math", "Latin Modern Math", math, serif;
   font-size: 1.15em;
   margin: 0 0.18em;
   vertical-align: middle;
+}
+
+/* Chromium does not reliably draw the overline for a square root containing
+   nested MathML. This bar follows the full width of the complete radicand. */
+math[data-math-expression] :is(mrow[data-radical-overline="true"], menclose[notation="top"]) {
+  display: inline-flex;
+  align-items: center;
+  border-top: 2px solid currentColor;
+  padding-top: 2px;
+}
+
+/* Use the same vector stroke as the bar instead of joining two different
+   font glyph/border metrics. The vector stretches with the full radicand. */
+math[data-math-expression] mrow:has(> :is(mrow[data-radical-overline="true"], menclose[notation="top"])) {
+  display: inline-flex;
+  align-items: stretch;
+}
+
+math[data-math-expression] mrow:has(> :is(mrow[data-radical-overline="true"], menclose[notation="top"])) > mo {
+  display: block;
+  flex: none;
+  width: 0.65em;
+  background-color: currentColor;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 100' preserveAspectRatio='none'%3E%3Cpath d='M1 59 L8 55 L14 84 L24 1 H32' fill='none' stroke='black' stroke-width='2' stroke-linejoin='round' vector-effect='non-scaling-stroke'/%3E%3C/svg%3E") 0 0 / 100% 100% no-repeat;
+}
+
+/* Keep fraction fences as tall as the numerator/denominator stack. */
+.rich-text-content math[data-math-expression="fraction"] mo[stretchy="true"] {
+  font-size: 1.12em;
+}
+
+/* Older saved fractions store the exponent directly under msup. */
+.rich-text-content math[data-math-expression="fraction"] msup > mtext:last-child {
+  position: relative;
+  top: 0.22em;
+}
+
+/* Align an exponent while it is still being typed after rendered MathML. */
+.rich-text-content math[data-math-expression="fraction"] + sup {
+  display: inline-block;
+  font-size: 0.6em;
+  line-height: 1;
+  vertical-align: top;
+  transform: translateY(-0.2em);
+}
+
+/* Older saved expressions predate the padded upper-limit markup. */
+.rich-text-content math:is(
+  [data-math-expression="summation"],
+  [data-math-expression="product"]
+) munderover > mtext:nth-child(3) {
+  position: relative;
+  top: -0.18em;
 }
 
 .rich-text-content p + p,
@@ -209,7 +262,7 @@ a:focus-visible {
 .rich-text-content [data-text-box="true"] {
   background: #f8fafc;
   border: 2px solid #94a3b8;
-  border-radius: 0.75rem;
+  border-radius: 0;
   display: block;
   margin: 0.9rem 0;
   min-height: 3rem;

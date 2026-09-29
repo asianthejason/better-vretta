@@ -12,10 +12,16 @@ import {
   type DragDropData,
   type DragDropPlacements,
 } from "@/lib/dragDrop";
+import { gradeDropdown, normalizeDropdownData, type DropdownQuestionData } from "@/lib/dropdownQuestion";
+import { gradeFillBlank, normalizeFillBlankData, type FillBlankData } from "@/lib/fillBlank";
+import { getMultipleChoiceCorrectAnswers, gradeMultipleChoice, normalizeMultipleChoiceResponse, type MultipleChoiceSelectionMode } from "@/lib/multipleChoice";
+import { hydratePrivateImageUrls } from "@/lib/privateImageUrls";
 
 type QuestionType =
   | "multiple-choice"
   | "drag-and-drop"
+  | "sort-into-groups"
+  | "dropdown"
   | "short-answer"
   | "fill-in-the-blank"
   | "image-question"
@@ -84,7 +90,9 @@ type Question = {
   prompt: string;
   question_data: {
     choices?: string[];
+    selectionMode?: MultipleChoiceSelectionMode;
     correctAnswer?: string;
+    correctAnswers?: string[];
     answerBoxes?: AnswerBox[];
     template?: string;
     blanks?: BlankBox[];
@@ -98,6 +106,8 @@ type Question = {
     sortingCategories?: SortingCategory[];
     correctOrder?: string[];
     dragDrop?: DragDropData;
+    dropdown?: DropdownQuestionData;
+    fillBlank?: FillBlankData;
   };
   question_order: number;
 };
@@ -108,6 +118,7 @@ type StudentAnswer = {
   question_id: string;
   answer_data: {
     answer?: string;
+    selectedAnswers?: string[];
     answers?: Record<string, string>;
     boxResults?: Record<string, boolean>;
     blankResults?: Record<string, boolean>;
@@ -130,7 +141,9 @@ type StudentAnswer = {
     question_order: number;
     question_data: {
       choices?: string[];
+      selectionMode?: MultipleChoiceSelectionMode;
       correctAnswer?: string;
+      correctAnswers?: string[];
       answerBoxes?: AnswerBox[];
       template?: string;
       blanks?: BlankBox[];
@@ -144,6 +157,8 @@ type StudentAnswer = {
       sortingCategories?: SortingCategory[];
       correctOrder?: string[];
       dragDrop?: DragDropData;
+      dropdown?: DropdownQuestionData;
+      fillBlank?: FillBlankData;
     };
   } | null;
 };
@@ -183,6 +198,10 @@ function displayMultipleChoiceAnswer(answer: string | undefined) {
   return tableChoiceMatch
     ? `Row ${String.fromCharCode(64 + Number(tableChoiceMatch[1]))}`
     : answer;
+}
+
+function displayMultipleChoiceAnswers(answers: string[]) {
+  return answers.length > 0 ? answers.map(displayMultipleChoiceAnswer).join(", ") : "No answer";
 }
 
 function getSortingItemDisplayLabel(item: SortingItem | undefined, fallback = "Item") {
@@ -303,7 +322,7 @@ export default function ResultsPage({
       .from("questions")
       .select("*")
       .eq("assessment_id", id)
-      .in("question_type", ["multiple-choice", "drag-and-drop"])
+      .in("question_type", ["multiple-choice", "drag-and-drop", "sort-into-groups", "dropdown", "fill-in-the-blank"])
       .order("question_order", { ascending: true });
 
     if (questionError) {
@@ -397,8 +416,18 @@ export default function ResultsPage({
       });
     }
 
+    let hydrated = {
+      questions: (questionData || []) as Question[],
+      answersByAttempt: groupedAnswers,
+    };
+    try {
+      hydrated = await hydratePrivateImageUrls(supabase, hydrated);
+    } catch (error) {
+      console.error("Could not authorize result images:", error);
+    }
+
     setAssessment(assessmentData);
-    setQuestions((questionData || []) as Question[]);
+    setQuestions(hydrated.questions);
     setAttempts([...(attemptData || [])].sort((left, right) =>
       compareStudentNamesByLastName(left.student_name, right.student_name),
     ));
@@ -408,7 +437,7 @@ export default function ResultsPage({
         return sessions;
       }, {})
     );
-    setAnswersByAttempt(groupedAnswers);
+    setAnswersByAttempt(hydrated.answersByAttempt);
     setLoading(false);
   }
 
@@ -478,14 +507,17 @@ export default function ResultsPage({
     }
 
     if (question.question_type === "multiple-choice") {
-      return answer.answer_data.answer === question.question_data.correctAnswer;
+      return gradeMultipleChoice(question.question_data, normalizeMultipleChoiceResponse(answer.answer_data.answer, answer.answer_data.selectedAnswers));
     }
 
-    if (question.question_type === "drag-and-drop") {
+    if ((question.question_type === "drag-and-drop" || question.question_type === "sort-into-groups")) {
       return gradeDragDrop(
         normalizeDragDropData(question.question_data.dragDrop),
         answer.answer_data.placements || {}
       ).isCorrect;
+    }
+    if (question.question_type === "dropdown") {
+      return gradeDropdown(normalizeDropdownData(question.question_data.dropdown), answer.answer_data.answers || {}).isCorrect;
     }
 
     if (question.question_type === "short-answer") {
@@ -500,14 +532,10 @@ export default function ResultsPage({
     }
 
     if (question.question_type === "fill-in-the-blank") {
-      const blanks = question.question_data.blanks || [];
-      const studentAnswers = answer.answer_data.answers || {};
-
-      return blanks.every(
-        (blank) =>
-          normalizeAnswer(studentAnswers[blank.id]) ===
-          normalizeAnswer(blank.correctAnswer)
-      );
+      return gradeFillBlank(
+        normalizeFillBlankData(question.question_data.fillBlank, question.question_data.template, question.question_data.blanks),
+        answer.answer_data.answers || {},
+      ).isCorrect;
     }
 
     if (question.question_type === "sorting-order") {
@@ -579,15 +607,11 @@ export default function ResultsPage({
     }
 
     if (question.question_type === "fill-in-the-blank") {
-      const blanks = question.question_data.blanks || [];
       const studentAnswers = answer.answer_data.answers || {};
-      const blankResults: Record<string, boolean> = {};
-
-      blanks.forEach((blank) => {
-        blankResults[blank.id] =
-          normalizeAnswer(studentAnswers[blank.id]) ===
-          normalizeAnswer(blank.correctAnswer);
-      });
+      const { blankResults } = gradeFillBlank(
+        normalizeFillBlankData(question.question_data.fillBlank, question.question_data.template, question.question_data.blanks),
+        studentAnswers,
+      );
 
       return {
         ...answer.answer_data,
@@ -647,16 +671,20 @@ export default function ResultsPage({
     if (question.question_type === "multiple-choice") {
       return {
         answer: "",
+        selectedAnswers: [],
         missing: true,
       };
     }
 
 
-    if (question.question_type === "drag-and-drop") {
+    if ((question.question_type === "drag-and-drop" || question.question_type === "sort-into-groups")) {
       return {
         placements: {},
         missing: true,
       };
+    }
+    if (question.question_type === "dropdown") {
+      return { answers: {}, entryResults: {}, missing: true };
     }
 
     if (question.question_type === "short-answer") {
@@ -679,7 +707,7 @@ export default function ResultsPage({
       const answers: Record<string, string> = {};
       const blankResults: Record<string, boolean> = {};
 
-      (question.question_data.blanks || []).forEach((blank) => {
+      normalizeFillBlankData(question.question_data.fillBlank, question.question_data.template, question.question_data.blanks).blanks.forEach((blank) => {
         answers[blank.id] = "";
         blankResults[blank.id] = false;
       });
@@ -1169,8 +1197,10 @@ export default function ResultsPage({
                                 Question {index + 1} ·{" "}
                                 {question?.question_type === "multiple-choice"
                                   ? "Multiple Choice"
-                                  : question?.question_type === "drag-and-drop"
-                                  ? "Drag & Drop"
+                                  : (question?.question_type === "drag-and-drop" || question?.question_type === "sort-into-groups")
+                                  ? (question?.question_type === "sort-into-groups" ? "Sort into groups" : "Drag & Drop")
+                                  : question?.question_type === "dropdown"
+                                  ? "Dropdown"
                                   : question?.question_type === "short-answer"
                                   ? "Short Answer"
                                   : question?.question_type ===
@@ -1191,7 +1221,7 @@ export default function ResultsPage({
                                 {question?.prompt}
                               </h4>
 
-                              {question?.question_type === "drag-and-drop" && (() => {
+                              {(question?.question_type === "drag-and-drop" || question?.question_type === "sort-into-groups") && (() => {
                                 const data = normalizeDragDropData(question.question_data.dragDrop);
                                 const placements = answer.answer_data.placements || {};
                                 return (
@@ -1636,19 +1666,28 @@ export default function ResultsPage({
                               {question?.question_type === "multiple-choice" && (
                                 <>
                                   <p className="mt-3 text-slate-300">
-                                    Student answer:{" "}
+                                    Student {getMultipleChoiceCorrectAnswers(question.question_data).length > 1 ? "answers" : "answer"}:{" "}
                                     <span className="font-semibold">
-                                      {displayMultipleChoiceAnswer(answer.answer_data.answer)}
+                                      {displayMultipleChoiceAnswers(normalizeMultipleChoiceResponse(answer.answer_data.answer, answer.answer_data.selectedAnswers))}
                                     </span>
                                   </p>
 
                                   <p className="mt-1 text-slate-300">
-                                    Current correct answer:{" "}
+                                    Current correct {getMultipleChoiceCorrectAnswers(question.question_data).length > 1 ? "answers" : "answer"}:{" "}
                                     <span className="font-semibold">
-                                      {displayMultipleChoiceAnswer(question.question_data.correctAnswer)}
+                                      {displayMultipleChoiceAnswers(getMultipleChoiceCorrectAnswers(question.question_data))}
                                     </span>
                                   </p>
                                 </>
+                              )}
+
+                              {question?.question_type === "dropdown" && (
+                                <div className="mt-3 space-y-2">
+                                  {normalizeDropdownData(question.question_data.dropdown).entries.map((entry, entryIndex) => {
+                                    const studentAnswer = answer.answer_data.answers?.[entry.id] || "";
+                                    return <div key={entry.id} className="rounded-xl border border-slate-800 bg-slate-900 p-3"><p className="text-sm text-slate-400">{entry.label || `Dropdown ${entryIndex + 1}`}</p><p className="mt-1 text-slate-300">Student answer: <span className="font-semibold">{studentAnswer || "No answer"}</span></p><p className="text-slate-300">Correct answer: <span className="font-semibold">{entry.correctAnswer}</span></p></div>;
+                                  })}
+                                </div>
                               )}
 
                               {question?.question_type === "short-answer" && (
@@ -1711,7 +1750,7 @@ export default function ResultsPage({
                               {question?.question_type ===
                                 "fill-in-the-blank" && (
                                 <div className="mt-3 space-y-3">
-                                  {question.question_data.blanks?.map(
+                                  {normalizeFillBlankData(question.question_data.fillBlank, question.question_data.template, question.question_data.blanks).blanks.map(
                                     (blank, blankIndex) => {
                                       const studentAnswer =
                                         answer.answer_data.answers?.[
