@@ -305,10 +305,10 @@ export default function CanvasInlineTextEditor({ element, selected, editing, too
         aria-multiline="true"
         onPointerDown={(event) => {
           const clickedMath = event.target instanceof Element && event.target.closest("math[data-math-expression]");
-          if (clickedMath) {
+          if (clickedMath && editing) {
             event.preventDefault();
             event.stopPropagation();
-            if (editing) placeCaretAfterMath(event.currentTarget, event.target);
+            placeCaretAfterMath(event.currentTarget, event.target);
             return;
           }
           if (editing) event.stopPropagation();

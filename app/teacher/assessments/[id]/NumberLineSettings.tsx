@@ -1,5 +1,6 @@
 "use client";
 
+import { copyNumberLine, readCopiedNumberLine } from "@/lib/numberLineClipboard";
 import { useId, useState } from "react";
 import { buildChoiceNumberLineHtml, parseChoiceNumberLine, type ChoiceNumberLine } from "@/lib/choiceNumberLine";
 
@@ -41,16 +42,18 @@ function validate(draft: Draft): { config: ChoiceNumberLine | null; error: strin
 
 const fieldClass = "mt-1 block w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm font-normal text-slate-950 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-40";
 
-export default function NumberLineSettings({ initial, onChange, onSave, onCancel, onDelete, saveLabel = "Done" }: {
+export default function NumberLineSettings({ initial, onChange, onSave, onCancel, onDelete, copySize, saveLabel = "Done" }: {
   initial: ChoiceNumberLine;
   onChange?: (value: ChoiceNumberLine) => void;
   onSave: (value: ChoiceNumberLine) => void;
   onCancel?: () => void;
   onDelete?: () => void;
   saveLabel?: string;
+  copySize?: { width: number; height: number };
 }) {
   const [draft, setDraft] = useState(() => draftFrom(initial));
   const id = useId();
+  const [copyMessage, setCopyMessage] = useState("");
   const [tab, setTab] = useState<"Scale" | "Markings" | "Appearance">("Scale");
   const { config, error } = validate(draft);
   function change(patch: Partial<Draft>) {
@@ -123,6 +126,20 @@ export default function NumberLineSettings({ initial, onChange, onSave, onCancel
         <label className="flex items-center gap-2"><input type="checkbox" checked={draft.extendArrowsPastTicks} disabled={!draft.showArrows} onChange={event => change({ extendArrowsPastTicks: event.target.checked })} />Extend arrows beyond end ticks</label>
         {draft.showArrows && draft.extendArrowsPastTicks && <div className="grid grid-cols-[1fr_6rem] items-end gap-3"><label className="text-xs font-semibold text-slate-700">Arrow extension<input aria-label="Arrow extension" type="range" min="0" max="25" step="0.5" value={Number(draft.arrowExtensionPercent) || 0} onChange={event => change({ arrowExtensionPercent: event.target.value })} className="mt-3 block w-full accent-blue-600" /></label>{numeric("arrowExtensionPercent", "Percent", "0.5")}</div>}
       </>}
+    </div>
+    <div className="mt-3 flex flex-wrap items-center gap-2">
+      <button type="button" disabled={!config} onClick={() => {
+        if (!config) return;
+        try { copyNumberLine({ config, ...copySize }); setCopyMessage("Copied. Open another number line editor, including in an option box, and choose Paste."); }
+        catch { setCopyMessage("Unable to copy. Browser storage is unavailable."); }
+      }} className="rounded-lg border border-blue-300 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800 disabled:opacity-40">Copy number line</button>
+      <button type="button" onClick={() => {
+        const copy = readCopiedNumberLine();
+        if (!copy) { setCopyMessage("Copy a number line first, then paste it here."); return; }
+        change(draftFrom(copy.config));
+        setCopyMessage("Pasted into this number line. You can edit its settings before saving.");
+      }} className="rounded-lg border border-blue-300 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800">Paste</button>
+      <p role="status" className="text-xs text-slate-600">{copyMessage}</p>
     </div>
     <div className="mt-4 flex flex-wrap justify-end gap-2 border-t border-slate-200 bg-white py-3">
       {onDelete && <button type="button" onClick={onDelete} className="mr-auto rounded-lg px-2 py-2 text-xs font-semibold text-red-700 hover:bg-red-50">Remove number line</button>}

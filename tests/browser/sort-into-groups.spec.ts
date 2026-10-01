@@ -13,11 +13,12 @@ test('canvas categories hold multiple choices, move them, remove them, and resto
   await page.getByRole('button',{name:'Place selected choice in Within'}).click();
   await expect(page.locator('output')).toHaveText('{"z0":["w","x"]}');
   await page.getByRole('button',{name:'Restore response'}).click();
-  await expect(page.getByRole('button',{name:'Return Statement W to choices'})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Statement W',exact:true})).toBeVisible();
   await page.getByRole('button',{name:'Statement W',exact:true}).click();
   await page.getByRole('button',{name:'Place selected choice in Between'}).click();
   await expect(page.locator('output')).toHaveText('{"z0":["x"],"z1":["w"]}');
-  await page.getByRole('button',{name:'Return Statement W to choices'}).click();
+  await page.getByRole('button',{name:'Statement W',exact:true}).focus();
+  await page.keyboard.press('Delete');
   await expect(page.locator('output')).toHaveText('{"z0":["x"],"z1":[]}');
   const transfer = await page.evaluateHandle(() => new DataTransfer());
   await transfer.evaluate(value => value.setData('text/plain', 'y'));

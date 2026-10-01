@@ -1,5 +1,7 @@
 "use client";
 
+import { assessmentPreviewHref } from "@/lib/assessmentPreview";
+
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -482,7 +484,7 @@ export default function TeacherPage() {
                       </Link>
 
                       <Link
-                        href={`/student/${assessment.id}?preview=1`}
+                        href={assessmentPreviewHref(assessment.id, "dashboard")}
                         target="_blank"
                         rel="noreferrer"
                         className="rounded-md border border-blue-200 bg-blue-50 px-2 py-1.5 text-center text-[10px] font-semibold text-blue-700 transition hover:bg-blue-100"

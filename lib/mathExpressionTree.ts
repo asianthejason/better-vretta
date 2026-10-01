@@ -131,7 +131,7 @@ export function renderMathExpressionMathMl(node: MathExpressionNode): string {
     case "root": {
       const indexText = node.index.type === "text" ? node.index.value.trim() : "";
       return indexText === "" || indexText === "2"
-        ? `<mrow><mo stretchy="true" symmetric="true">√</mo><mrow data-radical-overline="true">${render(node.radicand)}</mrow></mrow>`
+        ? `<msqrt>${render(node.radicand)}</msqrt>`
         : `<mroot>${render(node.radicand)}${render(node.index)}</mroot>`;
     }
     case "brackets": {

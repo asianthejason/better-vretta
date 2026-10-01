@@ -201,28 +201,9 @@ a:focus-visible {
   vertical-align: middle;
 }
 
-/* Chromium does not reliably draw the overline for a square root containing
-   nested MathML. This bar follows the full width of the complete radicand. */
+/* Legacy radicals must retain MathML layout, including nested fractions. */
 math[data-math-expression] :is(mrow[data-radical-overline="true"], menclose[notation="top"]) {
-  display: inline-flex;
-  align-items: center;
-  border-top: 2px solid currentColor;
-  padding-top: 2px;
-}
-
-/* Use the same vector stroke as the bar instead of joining two different
-   font glyph/border metrics. The vector stretches with the full radicand. */
-math[data-math-expression] mrow:has(> :is(mrow[data-radical-overline="true"], menclose[notation="top"])) {
-  display: inline-flex;
-  align-items: stretch;
-}
-
-math[data-math-expression] mrow:has(> :is(mrow[data-radical-overline="true"], menclose[notation="top"])) > mo {
-  display: block;
-  flex: none;
-  width: 0.65em;
-  background-color: currentColor;
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 100' preserveAspectRatio='none'%3E%3Cpath d='M1 59 L8 55 L14 84 L24 1 H32' fill='none' stroke='black' stroke-width='2' stroke-linejoin='round' vector-effect='non-scaling-stroke'/%3E%3C/svg%3E") 0 0 / 100% 100% no-repeat;
+  border-top: 0.06em solid currentColor;
 }
 
 /* Keep fraction fences as tall as the numerator/denominator stack. */
@@ -256,17 +237,17 @@ math[data-math-expression] mrow:has(> :is(mrow[data-radical-overline="true"], me
 
 .rich-text-content p + p,
 .rich-text-content div + div {
-  margin-top: 0.75rem;
+  margin-top: 0.75em;
 }
 
 .rich-text-content [data-text-box="true"] {
   background: #f8fafc;
-  border: 2px solid #94a3b8;
+  border: 0.1em solid #94a3b8;
   border-radius: 0;
   display: block;
-  margin: 0.9rem 0;
-  min-height: 3rem;
-  padding: 0.65rem 0.9rem;
+  margin: 0.65em 0;
+  min-height: 2.2em;
+  padding: 0.47em 0.65em;
   width: 100%;
 }
 

@@ -1,5 +1,7 @@
 "use client";
 
+import { assessmentPreviewHref } from "@/lib/assessmentPreview";
+
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
@@ -1007,24 +1009,25 @@ export default function ResultsPage({
       </nav>
       <main className="min-h-screen bg-slate-950 px-6 py-10 text-white">
       <div className="mx-auto max-w-6xl">
-        <section className="overflow-hidden rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-900 to-slate-900/80 shadow-2xl shadow-black/20">
-          <div className="flex flex-col gap-6 border-b border-slate-800 px-6 py-6 sm:flex-row sm:items-start sm:justify-between lg:px-8">
+        <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white text-slate-900 shadow-lg shadow-slate-200/50">
+          <div className="flex flex-col gap-6 border-b border-slate-200 px-6 py-6 xl:flex-row xl:items-start xl:justify-between lg:px-8">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-3">
-                <span className="rounded-full bg-blue-500/10 px-3 py-1 text-xs font-bold uppercase tracking-wider text-blue-300 ring-1 ring-inset ring-blue-400/20">
+                <span className="rounded-full bg-blue-500/10 px-3 py-1 text-xs font-bold uppercase tracking-wider text-blue-700 ring-1 ring-inset ring-blue-400/20">
                   {runStatus === "live" ? "Assessment live" : runStatus === "ended" ? "Assessment ended" : "Waiting room"}
                 </span>
               </div>
-              <h1 className="mt-4 truncate text-3xl font-bold tracking-tight text-white sm:text-4xl">
+              <h1 className="mt-4 truncate text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl">
                 {assessment.title}
               </h1>
             </div>
 
             <div className="flex shrink-0 flex-wrap gap-2">
+              <Link href={assessmentPreviewHref(assessment.id, "run")} className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm font-semibold text-blue-700 transition hover:bg-blue-100">Preview</Link>
             {runStatus === "live" ? <button onClick={() => void setAssessmentRun("end")} disabled={runActionBusy} className="rounded-xl bg-red-500 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-red-400 disabled:opacity-50">{runActionBusy ? "Updating…" : "End assessment"}</button> : <button onClick={() => void setAssessmentRun("start")} disabled={runActionBusy || !assessment.is_published} title={assessment.is_published ? "Open assessment access for waiting students" : "Publish this assessment before starting it"} className="rounded-xl bg-blue-500 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-50">{runActionBusy ? "Starting…" : runStatus === "ended" ? "Start again" : "Start assessment"}</button>}
             <button
               onClick={() => loadResults(assessmentId)}
-              className="rounded-xl border border-slate-700 bg-slate-950/40 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:border-slate-600 hover:bg-slate-800"
+              className="rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
             >
               Refresh Results
             </button>
@@ -1038,22 +1041,22 @@ export default function ResultsPage({
             </button>
             </div>
           </div>
-          <div className="grid divide-y divide-slate-800 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+          <div className="grid divide-y divide-slate-200 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
             <div className="px-5 py-5 lg:px-8">
               <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Completed</p>
-              <p className="mt-2 text-2xl font-bold text-white">
+              <p className="mt-2 text-2xl font-bold text-slate-950">
                 {completedStudentCount} <span className="text-base font-semibold text-slate-500">/ {assignedStudentIds.length}</span>
               </p>
               <p className="mt-1 text-xs text-slate-500">assigned students</p>
             </div>
             <div className="px-5 py-5 lg:px-8">
               <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Class average</p>
-              <p className="mt-2 text-2xl font-bold text-blue-300">{classAverage === null ? "—" : `${classAverage}%`}</p>
+              <p className="mt-2 text-2xl font-bold text-blue-700">{classAverage === null ? "—" : `${classAverage}%`}</p>
               <p className="mt-1 text-xs text-slate-500">across submissions</p>
             </div>
             <div className="px-5 py-5 lg:px-8">
               <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Submissions</p>
-              <p className="mt-2 text-2xl font-bold text-white">{attempts.length}</p>
+              <p className="mt-2 text-2xl font-bold text-slate-950">{attempts.length}</p>
               <p className="mt-1 text-xs text-slate-500">total attempts</p>
             </div>
           </div>

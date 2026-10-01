@@ -1,5 +1,7 @@
 "use client";
 
+import { assessmentPreviewHref } from "@/lib/assessmentPreview";
+
 import DragDropQuestion from "@/app/student/[id]/DragDropQuestion";
 
 import {
@@ -381,12 +383,12 @@ function LocationPreview({ data, itemPreviewUrls = {} }: { data: DragDropData; i
   const boxCanvasStyle = { width: `${boxSize.width / 10}cqw`, height: `${boxSize.height / 10}cqw` };
   const canvasHeight = normalizeCanvasHeight(data.canvasHeight);
   return (
-    <div style={{ containerType: "inline-size", aspectRatio: `100 / ${canvasHeight}` }} className="relative w-full overflow-hidden border border-slate-300 bg-slate-100">
+    <div style={{ containerType: "inline-size", aspectRatio: `100 / ${canvasHeight}` }} className="relative w-full overflow-hidden bg-white">
       {data.backgroundImageUrl ? <img src={data.backgroundImageUrl} alt="Match locations background" className="absolute inset-0 h-full w-full object-contain" /> : <div className="absolute inset-0" />}
       <div className="absolute inset-0">
         {(data.canvasElements || []).map((element) => <div key={element.id} className="absolute" style={{ left: `${element.x}%`, top: `${element.y}%`, width: `${element.width}%`, height: `${element.height}%` }}><LocationCanvasElementContent element={element} /></div>)}
         <div className={data.choiceBankGrouped === false ? "contents" : `absolute z-30 flex w-max ${data.choiceBankDirection === "vertical" ? "flex-col" : "flex-row"}`} style={data.choiceBankGrouped === false ? undefined : { left: `${data.choiceBankX ?? 8}%`, top: `${data.choiceBankY ?? 6}%`, gap: "0.8cqw" }}>
-          {previewItems.map((item) => <div key={item.id} style={{ ...boxCanvasStyle, ...(data.choiceBankGrouped === false ? { position: "absolute", zIndex: 30, left: `${item.x ?? 8}%`, top: `${item.y ?? 35}%` } as const : {}), padding: "0.6cqw 0.8cqw", fontSize: "1.7cqw" }} className={`box-border flex shrink-0 flex-col items-center ${item.textVerticalAlign === "top" ? "justify-start" : item.textVerticalAlign === "bottom" ? "justify-end" : "justify-center"} rounded-none border border-slate-400 bg-white/50 text-center font-medium text-black shadow-sm`}>
+          {previewItems.map((item) => <div key={item.id} style={{ ...boxCanvasStyle, ...(data.choiceBankGrouped === false ? { position: "absolute", zIndex: 30, left: `${item.x ?? 8}%`, top: `${item.y ?? 35}%` } as const : {}), padding: "0.6cqw 0.8cqw", fontSize: "1.7cqw" }} className={`box-border flex shrink-0 flex-col items-center ${item.textVerticalAlign === "top" ? "justify-start" : item.textVerticalAlign === "bottom" ? "justify-end" : "justify-center"} rounded-none border border-slate-400 bg-white text-center font-medium text-black shadow-none`}>
             {item.imageUrl && <img src={item.imageUrl} alt="" style={{ maxHeight: "10cqw", maxWidth: "14cqw", marginBottom: "0.5cqw" }} className="min-h-0 flex-1 object-contain" />}
             <span className="rich-text-content min-w-0 max-w-full" dangerouslySetInnerHTML={{ __html: getDragDropItemHtml(item) }} />
           </div>)}
@@ -3646,7 +3648,7 @@ export default function AssessmentEditorPage({
                   Run
                 </Link>
                 <Link
-                  href={`/student/${assessment.id}?preview=1`}
+                  href={assessmentPreviewHref(assessment.id, "editor")}
                   className="rounded-xl border border-blue-700 px-4 py-2 text-sm font-semibold text-blue-300 hover:bg-blue-950"
                 >
                   Preview

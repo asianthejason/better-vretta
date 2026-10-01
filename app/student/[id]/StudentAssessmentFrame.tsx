@@ -5,6 +5,7 @@ import styles from "./StudentAssessmentFrame.module.css";
 
 type Props = {
   title: string;
+  questionTextSize?: number;
   questions: Array<{ id: string; answered: boolean }>;
   activeIndex: number;
   onNavigate: (index: number) => void;
@@ -31,7 +32,7 @@ function subscribeToViewport(onChange: () => void) {
   return () => query.removeEventListener("change", onChange);
 }
 
-export default function StudentAssessmentFrame({ title, questions, activeIndex, onNavigate, split, panelView, onPanelViewChange, hasFormulaSheet, resourcesOpen, onToggleResources, onSubmit, canSubmit, submitDisabledReason, accountControls, children }: Props) {
+export default function StudentAssessmentFrame({ title, questionTextSize, questions, activeIndex, onNavigate, split, panelView, onPanelViewChange, hasFormulaSheet, resourcesOpen, onToggleResources, onSubmit, canSubmit, submitDisabledReason, accountControls, children }: Props) {
   const [collapsedOverride, setCollapsed] = useState<boolean | null>(null);
   const narrowScreen = useSyncExternalStore(subscribeToViewport, () => window.matchMedia("(max-width: 760px)").matches, () => false);
   const collapsed = collapsedOverride ?? narrowScreen;
@@ -58,10 +59,10 @@ export default function StudentAssessmentFrame({ title, questions, activeIndex, 
     </aside>
 
     <div className={styles.stage}>
-      <article className={`${styles.paper} ${split ? styles.splitPaper : ""}`} aria-label={`Question ${activeIndex + 1}`}>
+      <article className={`${styles.paper} ${split ? styles.splitPaper : ""} ${split && panelView === "split" ? styles.sideBySide : ""} ${split && panelView === "left" ? styles.leftOnly : ""}`} aria-label={`Question ${activeIndex + 1}`}>
         <header className={styles.questionHeader}>
           <h1>Question {activeIndex + 1}</h1>
-          <button type="button" onClick={toggleFlag} aria-pressed={currentFlagged} className={styles.flagButton}><span aria-hidden="true">⚑</span>{currentFlagged ? "Unflag this question" : "Flag this question"}</button>
+          <button type="button" onClick={toggleFlag} aria-pressed={currentFlagged} className={styles.flagButton} style={questionTextSize ? { fontSize: `${questionTextSize / 10}cqw` } : undefined}><span aria-hidden="true">⚑</span>{currentFlagged ? "Unflag this question" : "Flag this question"}</button>
         </header>
         <div className={styles.questionContent}>{children}</div>
       </article>

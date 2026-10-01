@@ -1,3 +1,5 @@
+import { buildMathExpressionHtml, decodeMathExpressionTree } from "./mathExpressionTree";
+
 export type StructuredMathKind = "summation" | "product" | "integral" | "limit" | "fraction";
 
 export type StructuredMathValues = {
@@ -43,6 +45,11 @@ export function decodeUnicodeSuperscript(str: string) {
 }
 
 export function normalizeFractionParentheses(html: string): string {
+  // Re-render saved expression trees so older radical markup receives layout fixes.
+  html = html.replace(/<math\b[^>]*data-math-tree="([^"]+)"[^>]*>[\s\S]*?<\/math>/g, (original, encoded) => {
+    const tree = decodeMathExpressionTree(encoded);
+    return tree ? buildMathExpressionHtml(tree) : original;
+  });
   if (!html || !html.includes('data-math-expression="fraction"')) return html;
 
   const pattern = /([(\[{])\s*(?:&nbsp;|\u200B)?\s*(<math\b[^>]*data-math-expression="fraction"[^>]*>[\s\S]*?<\/math>)\s*(?:&nbsp;|\u200B)?\s*([)\]}])\s*(?:<sup>([\s\S]*?)<\/sup>|\^([0-9a-zA-Z+-]+)|([¹²³⁴⁵⁶⁷⁸⁹⁰⁺⁻ⁿⁱᵃᵇˣʸ]+))?/g;

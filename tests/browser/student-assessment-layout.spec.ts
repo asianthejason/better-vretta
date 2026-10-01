@@ -38,9 +38,9 @@ test.beforeAll(async () => {
   componentCss = result.outputFiles.find((file) => file.path.endsWith(".css"))!.text;
 });
 
-function fixtures(withResources = true) {
+function fixtures(withResources = true, canvasHeight = 100) {
   const textCanvas = (text: string) => ({
-    version: 2, canvasHeight: 100,
+    version: 2, canvasHeight,
     elements: [{ id: text, type: "text", text, x: 3, y: 6, width: 90, height: 8, fontSize: 22, verticalAlign: "top" }],
   });
   const choiceHtml = ["2 + 4", "2 × 4", "2 + 2 + 2 + 2", "2 × 2 × 2 × 2"].map((value, index) => buildMathExpressionHtml({
@@ -63,7 +63,7 @@ function fixtures(withResources = true) {
   };
 }
 
-async function openAssessment(page: Page, withResources = true) {
+async function openAssessment(page: Page, withResources = true, canvasHeight = 100) {
   // Use the app's actual stylesheet and page component; replace only the backend/auth services.
   await page.goto("/");
   const stylesheets = await page.locator('link[rel="stylesheet"]').evaluateAll((links) => links.map((link) => (link as HTMLLinkElement).href));
@@ -71,7 +71,7 @@ async function openAssessment(page: Page, withResources = true) {
   await page.setContent('<div id="test-root"></div>');
   for (const url of stylesheets) await page.addStyleTag({ content: await (await page.request.get(url)).text() });
   await page.addStyleTag({ content: componentCss });
-  await page.evaluate((fixture) => Object.assign(window, { __assessmentFixture: fixture }), fixtures(withResources));
+  await page.evaluate((fixture) => Object.assign(window, { __assessmentFixture: fixture }), fixtures(withResources, canvasHeight));
   await page.addScriptTag({ type: "module", content: javascript });
   await expect(page.getByRole("heading", { name: "Question 1", exact: true })).toBeVisible();
 }
@@ -93,6 +93,15 @@ test("single canvas toggles to formula split view and restores its answer and wi
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("region", { name: "Formula sheet" })).toContainText("Formula reference");
   expect((await paper.boundingBox())!.width).toBeGreaterThan(initialWidth);
+  const splitBounds = (await paper.boundingBox())!;
+  const headerBounds = (await paper.locator("header").boundingBox())!;
+  const referenceBounds = (await page.getByRole("region", { name: "Formula sheet" }).boundingBox())!;
+  const questionBounds = (await page.locator('[data-question-pane="right"]').boundingBox())!;
+  expect(headerBounds.x).toBeCloseTo(splitBounds.x + splitBounds.width / 2, 0);
+  expect(headerBounds.width).toBeCloseTo(splitBounds.width / 2, 0);
+  expect(referenceBounds.y).toBeCloseTo(splitBounds.y, 0);
+  expect(questionBounds.y).toBeGreaterThanOrEqual(headerBounds.y + headerBounds.height);
+
   await expect(page.getByRole("radio", { name: "First answer", exact: true })).toHaveAttribute("aria-checked", "true");
   await toggle.click();
   await expect(page.getByRole("region", { name: "Formula sheet" })).toHaveCount(0);
@@ -207,5 +216,23 @@ test("resource views restore normal split view and work for legacy questions", a
     await expect(page.getByRole("region", { name: "Formula sheet" })).toHaveCount(0);
     await expect(page.locator("#student-question-content button").first()).toBeVisible();
     await toggle.click();
+  }
+});
+
+
+test("student view preserves a 76 percent canvas in single and split modes", async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await openAssessment(page, true, 76);
+  const panel = page.locator('[data-question-pane="right"]');
+  for (const split of [false, true]) {
+    if (split) await page.getByRole("button", { name: "Formula sheet", exact: true }).click();
+    const bounds = (await panel.boundingBox())!;
+    expect(bounds.height / bounds.width).toBeCloseTo(.76, 2);
+    const renderedCanvas = panel.locator(':scope > div').first();
+    const canvasBounds = (await renderedCanvas.boundingBox())!;
+    expect(canvasBounds.height).toBeCloseTo(bounds.height, 0);
+    const prompt = panel.locator('.rich-text-content').first();
+    const textBounds = (await prompt.boundingBox())!;
+    expect((textBounds.y - canvasBounds.y) / canvasBounds.height).toBeCloseTo(.06, 2);
   }
 });

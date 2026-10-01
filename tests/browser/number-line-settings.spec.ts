@@ -111,3 +111,27 @@ test("choice number line window floats, drags, and dismisses without changing th
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
 });
+
+for (const destination of ["canvas", "choice"] as const) {
+  test(`paste inside the ${destination} number line panel restores copied settings`, async ({ page }) => {
+    await openEditor(page, "canvas");
+    await page.getByRole("button", { name: "+ Number line", exact: true }).click();
+    let panel = page.locator("[data-number-line-settings]");
+    await panel.getByLabel("Number line preset").selectOption("decimal");
+    await panel.getByRole("button", { name: "Copy number line", exact: true }).click();
+    await expect(panel.getByRole("status")).toContainText("Copied");
+    await page.evaluate(() => localStorage.removeItem("number-line-test"));
+    await openEditor(page, destination);
+    await expect(page.getByRole("button", { name: "Paste number line", exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: destination === "canvas" ? "+ Number line" : "Build a number line", exact: true }).click();
+    panel = page.locator("[data-number-line-settings]");
+    await panel.getByRole("button", { name: "Paste", exact: true }).click();
+    await expect(panel.getByRole("status")).toContainText("Pasted");
+    await expect(panel.locator('[data-ray-endpoint="open"]')).toHaveCount(1);
+    await expect(panel.locator("svg text")).toHaveText(["2.05", "2.15", "2.25", "2.35", "2.45", "2.55"]);
+    await expect(panel.getByLabel("Tick spacing", { exact: true })).toHaveValue("0.05");
+    await panel.getByLabel("Tick spacing", { exact: true }).fill("0.1");
+    await panel.getByRole("button", { name: "Paste", exact: true }).click();
+    await expect(panel.getByLabel("Tick spacing", { exact: true })).toHaveValue("0.05");
+  });
+}

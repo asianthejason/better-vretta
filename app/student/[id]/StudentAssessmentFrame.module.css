@@ -23,8 +23,8 @@
 .stage { margin-left: var(--navigation-width); padding: 0 3.5rem 0 1rem; }
 .paper { width: 50%; min-height: 100dvh; margin-inline: auto; background: #fff; box-shadow: -7px 0 18px rgb(0 0 0 / 4%), 7px 0 18px rgb(0 0 0 / 4%); }
 .splitPaper { width: 100%; }
-.questionHeader { min-height: 7.4rem; border-bottom: 1px solid #ccc; padding: 1.55rem .9rem 1.25rem; }
-.questionHeader h1 { margin: 0 0 .7rem; font-size: 1.5rem; line-height: 1.3; font-weight: 600; }
+.questionHeader { container-type: inline-size; min-height: 7.4rem; border-bottom: 1px solid #ccc; padding: 1.55rem .9rem 1.25rem; }
+.questionHeader h1 { margin: 0 0 .7rem; font-size: 1.125rem; line-height: 1.3; font-weight: 600; }
 .flagButton { display: flex; align-items: center; gap: .6rem; color: #5188d1; font-size: 1rem; cursor: pointer; }
 .flagButton[aria-pressed="true"] { color: #1d5dac; font-weight: 600; }
 .questionContent { padding-bottom: 7rem; }
@@ -59,6 +59,14 @@
   .tools { width: 2.8rem; padding-inline: .15rem; bottom: 6.5rem; }
   .pageButton { min-width: 4rem; min-height: 4rem; padding: .5rem; font-size: .9rem; }
   .questionHeader { padding: 1rem .75rem; min-height: 6rem; }
-  .questionHeader h1 { font-size: 1.25rem; }
-  .flagButton { font-size: .85rem; }
+  .questionHeader h1 { font-size: 1.125rem; }
+
 }
+
+/* Keep the question heading with the right pane while the reference starts at the top. */
+.paper { position: relative; --question-heading-height: 7.4rem; }
+.sideBySide > .questionHeader { position: absolute; top: 0; right: 0; z-index: 20; width: 50%; height: var(--question-heading-height); background: white; }
+.sideBySide [data-question-pane="right"] { margin-top: var(--question-heading-height); }
+.sideBySide [data-question-canvas-layout] { padding-bottom: var(--question-heading-height); box-sizing: content-box; }
+.leftOnly > .questionHeader { display: none; }
+@media (max-width: 760px) { .paper { --question-heading-height: 6rem; } }

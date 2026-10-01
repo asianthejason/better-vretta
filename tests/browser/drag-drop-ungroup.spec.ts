@@ -64,7 +64,7 @@ test("drag-and-drop options ungroup, move independently, and retain student posi
   const betaPosition = await preview.locator('[data-choice-slot="b"]').getAttribute("style");
   await preview.getByRole("button", { name: "Alpha", exact: true }).click();
   await preview.locator('[class*="z-20"]').click();
-  await expect(preview.locator('[data-choice-slot="a"]')).toHaveCount(0);
+  await expect(preview.locator('[data-choice-slot="a"]').getByRole("button")).toHaveAccessibleName(/Return selected choice/);
   expect(await preview.locator('[data-choice-slot="b"]').getAttribute("style")).toBe(betaPosition);
   await page.getByRole("button", { name: "Group choices", exact: true }).click();
   await expect(page.getByRole("button", { name: "Ungroup", exact: true })).toBeVisible();

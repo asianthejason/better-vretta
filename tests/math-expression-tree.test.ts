@@ -31,7 +31,7 @@ test("math expressions support a fraction nested inside a square root", () => {
     },
   };
   const html = buildMathExpressionHtml(tree);
-  assert.match(html, /<mrow><mo stretchy="true" symmetric="true">√<\/mo><mrow data-radical-overline="true"><mfrac><mtext>p \+ q<\/mtext><mtext>2<\/mtext><\/mfrac><\/mrow><\/mrow>/);
+  assert.match(html, /<msqrt><mfrac><mtext>p \+ q<\/mtext><mtext>2<\/mtext><\/mfrac><\/msqrt>/);
   assert.match(html, /data-math-tree=/);
   assert.equal(mathExpressionHasEmptySlots(tree), false);
 });

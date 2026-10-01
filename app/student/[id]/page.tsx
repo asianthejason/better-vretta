@@ -1,5 +1,7 @@
 "use client";
 
+import { assessmentPreviewExitHref } from "@/lib/assessmentPreview";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -1164,7 +1166,6 @@ export default function StudentAssessmentPage({
   }
 
   const answeredCount = questions.filter(questionIsAnswered).length;
-  const dashboardHref = accountRole === "teacher" ? "/teacher" : "/student/dashboard";
   const showingResources = resourcesOpen && Boolean(assessment.formula_sheet);
   const activePanelView = showingResources ? resourcePanelView : studentPanelView;
   const activeQuestionHasSplitView = showingResources ||
@@ -1196,6 +1197,13 @@ export default function StudentAssessmentPage({
       )}
       <StudentAssessmentFrame
         title={assessment.title}
+        questionTextSize={(() => {
+          const question = questions[activeQuestionIndex];
+          if (!question?.question_data.canvas) return undefined;
+          const elements = question.question_data.dragDrop?.canvasElements || question.question_data.canvas.elements || [];
+          const prompt = elements.filter(element => element.type === "text").sort((a, b) => a.y - b.y || a.x - b.x)[0];
+          return prompt?.fontSize || 18;
+        })()}
         questions={questions.map((question) => ({ id: question.id, answered: questionIsAnswered(question) }))}
         activeIndex={activeQuestionIndex}
         onNavigate={(index) => { setActiveQuestionIndex(index); setStudentPanelView("split"); setResourcePanelView("split"); }}
@@ -1209,7 +1217,7 @@ export default function StudentAssessmentPage({
         canSubmit={canSubmitAssessment}
         submitDisabledReason={submitDisabledReason}
         accountControls={<div className="space-y-2">
-          {teacherPreview ? <Link href={dashboardHref} className="text-blue-600 hover:underline">Exit teacher preview</Link> : <>
+          {teacherPreview ? <Link href={assessmentPreviewExitHref(assessment.id, searchParams.get("from"))} className="text-blue-600 hover:underline">Exit teacher preview</Link> : <>
             <label htmlFor="student-name" className="block"><span className="sr-only">Student name</span><input id="student-name" className="w-full rounded border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-700" value={studentName} onChange={(event) => setStudentName(event.target.value)} placeholder="Your name" autoComplete="name" /></label>
             <p role="status" className={autosaveStatus === "error" ? "text-red-600" : "text-slate-500"}>{autosaveStatus === "error" ? "Autosave failed" : autosaveStatus === "saving" ? "Saving…" : autosaveStatus === "restored" ? "Progress restored" : "Progress saved"} · {answeredCount}/{questions.length}</p>
           </>}
@@ -1248,11 +1256,13 @@ export default function StudentAssessmentPage({
               <div key={question.id} className={showingResources && !canvas && activePanelView === "split" ? "grid grid-cols-2 items-start" : ""}>
                 {showingResources && !canvas && activePanelView !== "right" && (
                   <div role="region" aria-label="Formula sheet" className="min-w-0 overflow-hidden border-r border-slate-200 bg-white">
-                    <QuestionCanvas canvas={normalizeQuestionCanvas(assessment.formula_sheet)} />
+                    <div className="border-b border-slate-200 px-4 py-3 text-sm font-semibold text-slate-700">Formula Sheet</div><QuestionCanvas canvas={normalizeQuestionCanvas(assessment.formula_sheet)} />
                   </div>
                 )}
               <div
                 key={question.id}
+                data-question-canvas-layout={canvas ? "" : undefined}
+                data-question-pane={!canvas ? "right" : undefined}
                 style={canvas ? { aspectRatio: `100 / ${renderedCanvasHeight}` } : undefined}
                 className={`${showingResources && !canvas && activePanelView === "left" ? "hidden" : ""} ${canvas ? "relative w-full min-h-0" : "grid min-h-[calc(100vh-15rem)]"} overflow-hidden bg-white ${
                   isSplitCanvas && panelView === "split"
@@ -1261,11 +1271,12 @@ export default function StudentAssessmentPage({
                 }`}
               >
                 {canvas && isSplitCanvas && panelView !== "right" && (
-                  <div role="region" aria-label={showingResources ? "Formula sheet" : "Question reference"} className={`absolute left-0 top-0 z-10 overflow-hidden border-r border-slate-200 ${panelView === "split" ? "w-1/2" : "w-full"}`} style={{ containerType: "inline-size", aspectRatio: `100 / ${leftCanvasHeight}` }}>
-                    {leftCanvas ? <QuestionCanvas canvas={leftCanvas} className="pointer-events-none absolute inset-0 h-full w-full border-0" /> : <StudentReferencePanel data={question.question_data} compact />}
+                  <div role="region" aria-label={showingResources ? "Formula sheet" : "Question reference"} className={`absolute left-0 top-0 z-10 overflow-hidden border-r border-slate-200 ${panelView === "split" ? "w-1/2" : "w-full"}`} style={{ containerType: "inline-size", aspectRatio: `100 / ${leftCanvasHeight}`, paddingBottom: "3rem", boxSizing: "content-box" }}>
+                    {leftCanvas ? <><div className="border-b border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700">{showingResources ? "Formula Sheet" : question.question_data.leftPanelTitle || "Reference"}</div><QuestionCanvas canvas={leftCanvas} className="pointer-events-none w-full border-0" /></> : <StudentReferencePanel data={question.question_data} compact />}
                   </div>
                 )}
                 <div
+                  data-question-pane={canvas ? "right" : undefined}
                   style={canvas ? { containerType: "inline-size", aspectRatio: `100 / ${activeCanvasHeight}` } : undefined}
                   className={canvas
                     ? isSplitCanvas
