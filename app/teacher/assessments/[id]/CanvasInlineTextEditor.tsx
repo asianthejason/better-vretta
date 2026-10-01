@@ -5,9 +5,8 @@ import { getCanvasTextHtml, type DragDropCanvasElement } from "@/lib/dragDrop";
 import { normalizeFractionParentheses } from "@/lib/mathExpressions";
 import { buildMathExpressionHtml, createEmptyMathExpression, readMathExpressionTree, type MathExpressionNode } from "@/lib/mathExpressionTree";
 import MathExpressionComposer from "./MathExpressionComposer";
-import TextScriptIcon from "./TextScriptIcon";
 import { ACTIVE_TEXT_TOOLBAR_BUTTON } from "./textEditorToolbarStyles";
-import { exitTextBoxAtCaret, insertLineInTextBox, removeTextBoxAtCaret, activateInlineScript, normalizeFractionBracketsAtCaret, placeCaretAfterMath, toggleTextBoxAtCaret } from "./richTextEditing";
+import { exitTextBoxAtCaret, insertLineInTextBox, removeTextBoxAtCaret, normalizeFractionBracketsAtCaret, placeCaretAfterMath, toggleTextBoxAtCaret } from "./richTextEditing";
 
 export default function CanvasInlineTextEditor({ element, selected, editing, toolbarPlacement = "above", onChange, onMovePointerDown, onStartEditing, onDelete }: {
   element: DragDropCanvasElement;
@@ -28,7 +27,7 @@ export default function CanvasInlineTextEditor({ element, selected, editing, too
   const [mathPanel, setMathPanel] = useState<"editable" | null>(null);
   const [mathTree, setMathTree] = useState<MathExpressionNode>(() => createEmptyMathExpression());
   const [horizontalAlign, setHorizontalAlign] = useState<"left" | "center" | "right">("left");
-  const [inlineFormat, setInlineFormat] = useState({ subscript: false, superscript: false, textBox: false });
+  const [inlineFormat, setInlineFormat] = useState({ textBox: false });
 
   useEffect(() => {
     function refreshHorizontalAlign() {
@@ -49,8 +48,6 @@ export default function CanvasInlineTextEditor({ element, selected, editing, too
       );
       const selectedElement = selectedNode?.closest("sub, sup, [data-text-box=\"true\"]");
       setInlineFormat({
-        subscript: selectedElement?.tagName === "SUB" || document.queryCommandState("subscript"),
-        superscript: selectedElement?.tagName === "SUP" || document.queryCommandState("superscript"),
         textBox: Boolean(selectedNode?.closest('[data-text-box="true"]')),
       });
     }
@@ -144,18 +141,6 @@ export default function CanvasInlineTextEditor({ element, selected, editing, too
     if (command === "justifyLeft") setHorizontalAlign("left");
     if (command === "justifyCenter") setHorizontalAlign("center");
     if (command === "justifyRight") setHorizontalAlign("right");
-    emitChange();
-  }
-
-  function applyInlineScript(kind: "subscript" | "superscript") {
-    const editor = editorRef.current;
-    if (!editing || !editor || !activateInlineScript(editor, kind)) return;
-    const turningOff = kind === "subscript" ? inlineFormat.subscript : inlineFormat.superscript;
-    setInlineFormat({
-      subscript: !turningOff && kind === "subscript",
-      superscript: !turningOff && kind === "superscript",
-      textBox: inlineFormat.textBox,
-    });
     emitChange();
   }
 
@@ -275,8 +260,6 @@ export default function CanvasInlineTextEditor({ element, selected, editing, too
           {(["Left", "Center", "Right"] as const).map((alignment) => { const selectedAlignment = horizontalAlign === alignment.toLowerCase(); return <button key={alignment} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => runCommand(`justify${alignment}`)} aria-pressed={selectedAlignment} className={`${toolbarButton} ${selectedAlignment ? ACTIVE_TEXT_TOOLBAR_BUTTON : ""}`} aria-label={`Align selected paragraph ${alignment.toLowerCase()}`} title={`Align ${alignment.toLowerCase()}`}><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">{alignment === "Left" ? <path d="M3 4h14M3 8h9M3 12h14M3 16h9" /> : alignment === "Center" ? <path d="M3 4h14M5.5 8h9M3 12h14M5.5 16h9" /> : <path d="M3 4h14M8 8h9M3 12h14M8 16h9" />}</svg></button>; })}
           {(["top", "middle", "bottom"] as const).map((alignment) => <button key={alignment} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => onChange({ verticalAlign: alignment })} aria-pressed={(element.verticalAlign || "top") === alignment} className={`${toolbarButton} ${(element.verticalAlign || "top") === alignment ? ACTIVE_TEXT_TOOLBAR_BUTTON : ""}`} aria-label={`Align text to the ${alignment}`} title={`Align ${alignment}`}><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="h-4 w-4" aria-hidden="true"><path d="M3 3h14M3 17h14" />{alignment === "top" ? <path d="M6 6h8M8 9h4" /> : alignment === "middle" ? <path d="M6 8h8M8 11h4" /> : <path d="M8 11h4M6 14h8" />}</svg></button>)}
           <button type="button" title="Math expression builder" aria-label="Math expression builder" onMouseDown={(event) => event.preventDefault()} onClick={toggleMathPanel} aria-pressed={mathPanel === "editable"} className={`${toolbarButton} ${mathPanel === "editable" ? ACTIVE_TEXT_TOOLBAR_BUTTON : ""}`}><span className="text-sm" aria-hidden="true">∑</span></button>
-          <button type="button" title="Subscript" aria-label="Subscript" aria-pressed={inlineFormat.subscript} onMouseDown={(event) => event.preventDefault()} onClick={() => applyInlineScript("subscript")} className={`${toolbarButton} ${inlineFormat.subscript ? ACTIVE_TEXT_TOOLBAR_BUTTON : ""}`}><TextScriptIcon kind="subscript" /></button>
-          <button type="button" title="Superscript" aria-label="Superscript" aria-pressed={inlineFormat.superscript} onMouseDown={(event) => event.preventDefault()} onClick={() => applyInlineScript("superscript")} className={`${toolbarButton} ${inlineFormat.superscript ? ACTIVE_TEXT_TOOLBAR_BUTTON : ""}`}><TextScriptIcon kind="superscript" /></button>
           <button type="button" title="Toggle box around text" aria-label="Toggle box around text" aria-pressed={inlineFormat.textBox} onMouseDown={(event) => event.preventDefault()} onClick={toggleTextBox} className={`${toolbarButton} ${inlineFormat.textBox ? ACTIVE_TEXT_TOOLBAR_BUTTON : ""}`}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-5" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="2" /><path d="M6 9h12M6 13h9M6 17h11" /></svg></button>
           <button type="button" title="Remove box but keep text" aria-label="Remove box but keep text" disabled={!inlineFormat.textBox} onMouseDown={(event) => event.preventDefault()} onClick={removeTextBox} className={`${toolbarButton} disabled:opacity-35`}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-5" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" strokeDasharray="3 3" /><path d="M6 9h12M6 13h9M5 21 19 3" /></svg></button>
           <button type="button" title="Exit box and continue on the next line" aria-label="Exit box and continue on the next line" disabled={!inlineFormat.textBox} onMouseDown={(event) => event.preventDefault()} onClick={exitTextBox} className={`${toolbarButton} disabled:opacity-35`}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-5" aria-hidden="true"><rect x="3" y="3" width="13" height="12" rx="2" /><path strokeLinecap="round" strokeLinejoin="round" d="M10 9h9v10m0 0-4-4m4 4 4-4" /></svg></button>

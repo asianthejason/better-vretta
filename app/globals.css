@@ -198,7 +198,7 @@ a:focus-visible {
   font-family: "STIX Two Math", "Cambria Math", "Latin Modern Math", math, serif;
   font-size: 1.15em;
   margin: 0 0.18em;
-  vertical-align: middle;
+  vertical-align: baseline;
 }
 
 /* Legacy radicals must retain MathML layout, including nested fractions. */
