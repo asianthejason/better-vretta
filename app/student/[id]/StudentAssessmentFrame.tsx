@@ -35,7 +35,7 @@ function subscribeToViewport(onChange: () => void) {
 export default function StudentAssessmentFrame({ title, questionTextSize, questions, activeIndex, onNavigate, split, panelView, onPanelViewChange, hasFormulaSheet, resourcesOpen, onToggleResources, onSubmit, canSubmit, submitDisabledReason, accountControls, children }: Props) {
   const [collapsedOverride, setCollapsed] = useState<boolean | null>(null);
   const narrowScreen = useSyncExternalStore(subscribeToViewport, () => window.matchMedia("(max-width: 760px)").matches, () => false);
-  const collapsed = collapsedOverride ?? (narrowScreen || split);
+  const collapsed = collapsedOverride ?? narrowScreen;
   const [flagged, setFlagged] = useState<Set<string>>(() => new Set());
   const currentId = questions[activeIndex]?.id;
   const currentFlagged = Boolean(currentId && flagged.has(currentId));

@@ -96,8 +96,8 @@ test("single canvas toggles to formula split view and restores its answer and wi
   const splitBounds = (await paper.boundingBox())!;
   const headerBounds = (await paper.locator("header").boundingBox())!;
   expect(headerBounds.height).toBeLessThan(90);
-  expect((await page.getByRole("complementary", { name: "Assessment navigation" }).boundingBox())!.width).toBe(56);
-  expect(splitBounds.width).toBeCloseTo(1971 - 56 - 56 - 16, 0);
+  expect((await page.getByRole("complementary", { name: "Assessment navigation" }).boundingBox())!.width).toBe(184);
+  expect(splitBounds.width).toBeCloseTo(1971 - 184 - 56 - 16, 0);
   const referenceBounds = (await page.getByRole("region", { name: "Formula sheet" }).boundingBox())!;
   const questionBounds = (await page.locator('[data-question-pane="right"]').boundingBox())!;
   expect(headerBounds.x).toBeCloseTo(splitBounds.x + splitBounds.width / 2, 0);
