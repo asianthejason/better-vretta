@@ -315,13 +315,17 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
     };
   };
 
-  const getSnapLines = (bounds: DOMRect, excluded: { elementId?: string; zoneId?: string; choices?: boolean } = {}) => {
+  const getSnapLines = (bounds: DOMRect, excluded: { elementId?: string; zoneId?: string; itemId?: string; choices?: boolean } = {}) => {
     const targetWidth = boxSize.width / 10;
     const targetHeight = ((boxSize.height / 1000) * bounds.width / bounds.height) * 100;
     const rects: CanvasRect[] = [
       ...(data.canvasElements || []).filter((element) => element.id !== excluded.elementId).map(({ x, y, width, height }) => ({ x, y, width, height })),
       ...data.zones.filter((zone) => zone.id !== excluded.zoneId).map((zone) => ({ x: zone.x ?? 10, y: zone.y ?? 10, width: data.preset === "category-canvas" ? zone.width ?? 43 : targetWidth, height: data.preset === "category-canvas" ? zone.height ?? 40 : targetHeight })),
-      ...(!excluded.choices && data.items.length ? [getChoiceBankRect()] : []),
+      ...(!excluded.choices && data.items.length
+        ? choicesAreGrouped
+          ? [getChoiceBankRect()]
+          : data.items.filter(item => item.id !== excluded.itemId).map(item => ({ x: item.x ?? 8, y: item.y ?? 35, ...itemPercentSize(item) }))
+        : []),
       ...overlayBlocks.filter((overlay) => overlay.id !== editingOverlayId).map((overlay) => overlay.bounds),
     ];
     return {
@@ -526,7 +530,7 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
       const size = itemPercentSize(currentItem);
       const width = size.width;
       const height = size.height;
-      const lines = getSnapLines(bounds, { choices: true });
+      const lines = getSnapLines(bounds, { itemId: gesture.itemId });
       const snapX = snapPosition(gesture.startLeft + deltaX, width, lines.x, (7 / bounds.width) * 100);
       const snapY = snapPosition(gesture.startTop + deltaY, height, lines.y, (7 / bounds.height) * 100);
       setSnapGuides({ x: snapX?.guide ?? null, y: snapY?.guide ?? null });
@@ -548,7 +552,7 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
       let y = gesture.startTop;
       let nextWidth = width;
       let nextHeight = height;
-      const lines = getSnapLines(bounds, { choices: true });
+      const lines = getSnapLines(bounds, { itemId: gesture.itemId });
       const xThreshold = (7 / bounds.width) * 100;
       const yThreshold = (7 / bounds.height) * 100;
       let guideX: number | null = null;

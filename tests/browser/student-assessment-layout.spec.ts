@@ -81,7 +81,7 @@ test("single canvas toggles to formula split view and restores its answer and wi
   await openAssessment(page);
   const paper = page.getByRole("article", { name: "Question 1", exact: true });
   const initialWidth = (await paper.boundingBox())!.width;
-  expect(initialWidth).toBeCloseTo((1971 - 184 - 56 - 16) / 2, 0);
+  expect(initialWidth).toBeCloseTo((1971 - 184 - 56 - 16) * 0.8, 0);
   expect((await page.getByRole("complementary", { name: "Assessment navigation" }).boundingBox())!.width).toBe(184);
   const sections = page.getByLabel("Navigate the assessment", { exact: true });
   await expect(sections.locator("option")).toHaveText(["Questions"]);
@@ -95,6 +95,9 @@ test("single canvas toggles to formula split view and restores its answer and wi
   expect((await paper.boundingBox())!.width).toBeGreaterThan(initialWidth);
   const splitBounds = (await paper.boundingBox())!;
   const headerBounds = (await paper.locator("header").boundingBox())!;
+  expect(headerBounds.height).toBeLessThan(90);
+  expect((await page.getByRole("complementary", { name: "Assessment navigation" }).boundingBox())!.width).toBe(56);
+  expect(splitBounds.width).toBeCloseTo(1971 - 56 - 56 - 16, 0);
   const referenceBounds = (await page.getByRole("region", { name: "Formula sheet" }).boundingBox())!;
   const questionBounds = (await page.locator('[data-question-pane="right"]').boundingBox())!;
   expect(headerBounds.x).toBeCloseTo(splitBounds.x + splitBounds.width / 2, 0);
@@ -168,7 +171,7 @@ test("resource panel view controls switch left, split, and right without losing 
   await page.setViewportSize({ width: 1280, height: 900 });
   await openAssessment(page);
   const paper = page.getByRole("article", { name: "Question 1", exact: true });
-  expect((await paper.boundingBox())!.width).toBeCloseTo((1280 - 184 - 56 - 16) / 2, 0);
+  expect((await paper.boundingBox())!.width).toBeCloseTo((1280 - 184 - 56 - 16) * 0.8, 0);
   const controls = page.getByRole("group", { name: "Panel view", exact: true });
   await expect(controls).toHaveCount(0);
   const answer = page.getByRole("radio", { name: "First answer", exact: true });

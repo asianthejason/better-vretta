@@ -1,5 +1,5 @@
 import { normalizeFractionParentheses } from "./mathExpressions";
-import { decodeMathExpressionTree, type MathExpressionNode } from "./mathExpressionTree";
+import { buildMathExpressionHtml, decodeMathExpressionTree, type MathExpressionNode } from "./mathExpressionTree";
 
 export type DragDropPreset = "category-canvas" | "categories" | "sequence" | "locations" | "inline" | "freeform";
 
@@ -313,20 +313,82 @@ export function getLocationBoxSize(items: DragDropItem[], customSize?: DragDropB
   return { width, height: Math.round(Math.max(48, Math.min(220, Math.max(0, ...heights)))) };
 }
 
-function mathChoiceWidth(node: MathExpressionNode): number {
-  switch (node.type) {
-    case "text": return Math.max(9.5, node.value.length * 9.5);
-    case "slot": return 17;
-    case "sequence": return node.children.reduce((width, child) => width + mathChoiceWidth(child), 0);
-    case "fraction": return Math.max(mathChoiceWidth(node.numerator), mathChoiceWidth(node.denominator)) + 8;
-    case "root": return mathChoiceWidth(node.radicand) + 20 + mathChoiceWidth(node.index) * 0.5;
-    case "brackets": return mathChoiceWidth(node.body) + 16;
-    case "superscript": return mathChoiceWidth(node.base) + mathChoiceWidth(node.exponent) * 0.7;
-    case "subscript": return mathChoiceWidth(node.base) + mathChoiceWidth(node.subscript) * 0.7;
-    case "summation": case "product": return Math.max(24, mathChoiceWidth(node.lower) * 0.7, mathChoiceWidth(node.upper) * 0.7) + mathChoiceWidth(node.body);
-    case "integral": return 24 + Math.max(mathChoiceWidth(node.lower), mathChoiceWidth(node.upper)) * 0.7 + mathChoiceWidth(node.body) + 10 + mathChoiceWidth(node.variable);
-    case "limit": return Math.max(24, (mathChoiceWidth(node.variable) + mathChoiceWidth(node.approach) + 17) * 0.7) + mathChoiceWidth(node.body);
+const measuredMathSizes = new Map<string, DragDropBoxSize>();
+
+function measureMathChoice(node: MathExpressionNode): DragDropBoxSize | null {
+  if (typeof document === "undefined" || !document.body) return null;
+  const key = `${document.fonts?.status}:${JSON.stringify(node)}`;
+  const cached = measuredMathSizes.get(key);
+  if (cached) return cached;
+  // Measure at the same 17px per 1000 canvas units used by every choice renderer.
+  // Only generated MathML is inserted here, never arbitrary saved HTML.
+  const probe = document.createElement("span");
+  probe.className = "rich-text-content";
+  probe.style.cssText = "position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none;display:inline-block;width:max-content;white-space:nowrap;font-family:Arial,Helvetica,sans-serif;font-size:17px;font-weight:500;line-height:1.75;";
+  probe.setAttribute("aria-hidden", "true");
+  probe.innerHTML = buildMathExpressionHtml(node);
+  document.body.appendChild(probe);
+  const bounds = probe.getBoundingClientRect();
+  let left = bounds.left, right = bounds.right, top = bounds.top, bottom = bounds.bottom;
+  for (const child of probe.querySelectorAll("math, math *")) {
+    const rect = child.getBoundingClientRect();
+    left = Math.min(left, rect.left); right = Math.max(right, rect.right);
+    top = Math.min(top, rect.top); bottom = Math.max(bottom, rect.bottom);
   }
+  probe.remove();
+  const size = { width: Math.ceil(right - left), height: Math.ceil(bottom - top) };
+  if (!size.width || !size.height) return null;
+  if (measuredMathSizes.size >= 500) measuredMathSizes.clear();
+  measuredMathSizes.set(key, size);
+  return size;
+}
+
+function mathChoiceSize(node: MathExpressionNode): DragDropBoxSize {
+  const measured = measureMathChoice(node);
+  if (measured) return measured;
+  const size = mathChoiceSize;
+  switch (node.type) {
+    case "text": return { width: Math.max(12, node.value.length * 11), height: 24 };
+    case "slot": return { width: 20, height: 24 };
+    case "sequence": {
+      const children = node.children.map(size);
+      return { width: children.reduce((sum, child) => sum + child.width, 0), height: Math.max(24, ...children.map(child => child.height)) };
+    }
+    case "fraction": {
+      const numerator = size(node.numerator), denominator = size(node.denominator);
+      const whole = node.whole ? size(node.whole) : { width: 0, height: 0 };
+      return { width: whole.width + Math.max(numerator.width, denominator.width) + 14, height: Math.max(whole.height, numerator.height + denominator.height + 12) };
+    }
+    case "root": {
+      const body = size(node.radicand), index = size(node.index);
+      return { width: body.width + 24 + index.width * 0.6, height: Math.max(body.height + 14, index.height) };
+    }
+    case "brackets": {
+      const body = size(node.body);
+      return { width: body.width + Math.max(28, body.height * 0.65), height: body.height + 10 };
+    }
+    case "superscript": case "subscript": {
+      const base = size(node.base), script = size(node.type === "superscript" ? node.exponent : node.subscript);
+      return { width: base.width + script.width * 0.8 + 5, height: base.height + script.height * 0.65 };
+    }
+    case "summation": case "product": case "integral": {
+      const body = size(node.body), upper = size(node.upper), lower = size(node.lower);
+      return { width: Math.max(32, upper.width, lower.width) + body.width + (node.type === "integral" ? 16 + size(node.variable).width : 0), height: Math.max(body.height, 36 + upper.height + lower.height) };
+    }
+    case "limit": {
+      const body = size(node.body), variable = size(node.variable), approach = size(node.approach);
+      return { width: Math.max(32, variable.width + approach.width + 20) + body.width, height: Math.max(body.height, 30 + Math.max(variable.height, approach.height)) };
+    }
+  }
+}
+
+function mathChoiceHeight(html?: string) {
+  let height = 0;
+  for (const match of (html || "").matchAll(/data-math-tree="([^"]+)"/g)) {
+    const tree = decodeMathExpressionTree(match[1]);
+    if (tree) height = Math.max(height, mathChoiceSize(tree).height);
+  }
+  return height;
 }
 
 function singleLineChoiceContentWidth(content: string, html?: string) {
@@ -337,7 +399,7 @@ function singleLineChoiceContentWidth(content: string, html?: string) {
   // Fractions stack their numerator and denominator; plain text counts both as one long line.
   const measured = visibleHtml.replace(/<math\b[^>]*data-math-tree="([^"]+)"[^>]*>[\s\S]*?<\/math>/gi, (markup, encoded: string) => {
     const tree = decodeMathExpressionTree(encoded);
-    return tree ? "M".repeat(Math.ceil(mathChoiceWidth(tree) / 9.5)) : markup;
+    return tree ? "M".repeat(Math.ceil(mathChoiceSize(tree).width / 9.5)) : markup;
   }).replace(/<br\s*\/?>|<\/(?:div|p)>/gi, "\n").replace(/<[^>]*>/g, "").replace(/&(?:#\d+|#x[\da-f]+|\w+);/gi, "M");
   return Math.max(0, ...measured.split("\n").map((line) => line.length * 9.5));
 }
@@ -354,7 +416,9 @@ export function getSingleLineChoiceBoxSize(items: (DragDropItem & { html?: strin
   const hasNumberLine = items.some((item) => item.html?.includes("data-choice-number-line="));
   const markerWidth = selectionMode === "multiple" ? 28 : 0;
   const width = Math.round(Math.min(900, Math.max(hasNumberLine ? 364 : 48, items.some((item) => item.imageUrl) ? 152 : 0, widestText + 24)) + markerWidth);
-  return { width, height: items.some((item) => item.imageUrl) ? 154 + (hasNumberLine ? 60 : 0) : hasNumberLine ? 80 : 64 };
+  const mathHeight = Math.max(0, ...items.map(item => mathChoiceHeight(item.html ?? item.contentHtml)));
+  const baseHeight = items.some((item) => item.imageUrl) ? 154 + (hasNumberLine ? 60 : 0) : hasNumberLine ? 80 : 64;
+  return { width, height: Math.ceil(Math.max(baseHeight, mathHeight + 22 + (items.some(item => item.imageUrl) ? 108 : 0))) };
 }
 
 /** Content sizes are in canvas-width units; saved heights are canvas-height percentages. */
