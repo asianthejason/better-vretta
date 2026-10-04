@@ -100,13 +100,31 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
   renderChoiceEditorExtra?: (itemId: string, index: number) => ReactNode;
   title?: string;
   description?: string;
-  overlayBlocks?: Array<{ id: string; label: string; bounds: CanvasRect; content: ReactNode; editor?: ReactNode; hideLabel?: boolean }>;
+  overlayBlocks?: Array<{ id: string; label: string; bounds: CanvasRect; content: ReactNode; editor?: ReactNode; hideLabel?: boolean; autoWidth?: boolean }>;
   onRemoveOverlay?: (id: string) => void;
   onOverlayBoundsChange?: (id: string, bounds: CanvasRect) => void;
   toolbarActions?: ReactNode;
 }) {
   const canvasHeight = normalizeCanvasHeight(data.canvasHeight);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const resizeCanvasHeight = (requestedHeight: number | string) => {
+    // Coordinates are percentages of height; convert them to preserve their
+    // distance from the top when only the canvas extent changes.
+    const canvasBounds = canvasRef.current?.getBoundingClientRect();
+    const contentBottom = canvasBounds ? Math.max(0, ...Array.from(canvasRef.current!.querySelectorAll<HTMLElement>("[data-nudge-kind], [data-choice-bank]")).map(node => (node.getBoundingClientRect().bottom - canvasBounds.top) / canvasBounds.width * 100)) : 0;
+    const nextHeight = Math.max(normalizeCanvasHeight(requestedHeight), Math.min(canvasHeight, contentBottom));
+    const ratio = canvasHeight / nextHeight;
+    if (ratio === 1) return;
+    onChange({
+      ...data,
+      canvasHeight: nextHeight,
+      canvasElements: data.canvasElements?.map(element => ({ ...element, y: element.y * ratio, height: element.height * ratio })),
+      choiceBankY: (data.choiceBankY ?? 6) * ratio,
+      items: data.items.map(item => ({ ...item, y: (item.y ?? 35) * ratio, ...((choicePresentation === "box" && !choicesAreGrouped) || (choiceOnly && choicePresentation === "content" && emptyChoice(item) && item.height !== undefined) ? { height: (item.height ?? 10.5) * ratio } : {}) })),
+      zones: data.zones.map(zone => ({ ...zone, y: (zone.y ?? 10) * ratio, ...(data.preset === "category-canvas" ? { height: (zone.height ?? 40) * ratio } : {}) })),
+    });
+    overlayBlocks.forEach(overlay => onOverlayBoundsChange?.(overlay.id, { ...overlay.bounds, y: overlay.bounds.y * ratio, height: overlay.bounds.height * ratio }));
+  };
   const selectedChoiceRef = useRef<string | null>(null);
   const nudgeTargetRef = useRef<HTMLElement | null>(null);
   const [gesture, setGesture] = useState<Gesture | null>(null);
@@ -330,7 +348,7 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
     ];
     return {
       x: [0, SAFE_ZONE_INSET_PERCENT, 50, SAFE_ZONE_END_PERCENT, 100, ...rects.flatMap((rect) => [rect.x, rect.x + rect.width / 2, rect.x + rect.width])],
-      y: [0, SAFE_ZONE_INSET_PERCENT, 50, SAFE_ZONE_END_PERCENT, 100, ...rects.flatMap((rect) => [rect.y, rect.y + rect.height / 2, rect.y + rect.height])],
+      y: [0, SAFE_ZONE_INSET_PERCENT * 100 / canvasHeight, 50, 100 - SAFE_ZONE_INSET_PERCENT * 100 / canvasHeight, 100, ...rects.flatMap((rect) => [rect.y, rect.y + rect.height / 2, rect.y + rect.height])],
     };
   };
 
@@ -1060,9 +1078,9 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
         </div>
         <div className="ml-auto flex h-9 shrink-0 items-center gap-1 rounded-lg border border-slate-300 bg-slate-50 px-2 text-xs font-semibold text-slate-700" title="Extend or shorten the canvas vertically">
           <span className="mr-1 whitespace-nowrap">Canvas height</span>
-          <button type="button" aria-label="Shorten canvas" disabled={canvasHeight <= MIN_CANVAS_HEIGHT} onClick={() => onChange({ ...data, canvasHeight: normalizeCanvasHeight(canvasHeight - 10) })} className="grid h-7 w-7 place-items-center rounded border border-slate-300 bg-white text-base hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-35">−</button>
-          <input type="range" min={MIN_CANVAS_HEIGHT} max={MAX_CANVAS_HEIGHT} step="5" value={canvasHeight} onChange={(event) => onChange({ ...data, canvasHeight: normalizeCanvasHeight(event.target.value) })} className="w-16 accent-blue-600" aria-label="Canvas height" />
-          <button type="button" aria-label="Extend canvas" disabled={canvasHeight >= MAX_CANVAS_HEIGHT} onClick={() => onChange({ ...data, canvasHeight: normalizeCanvasHeight(canvasHeight + 10) })} className="grid h-7 w-7 place-items-center rounded border border-slate-300 bg-white text-base hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-35">+</button>
+          <button type="button" aria-label="Shorten canvas" disabled={canvasHeight <= MIN_CANVAS_HEIGHT} onClick={() => resizeCanvasHeight(canvasHeight - 10)} className="grid h-7 w-7 place-items-center rounded border border-slate-300 bg-white text-base hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-35">−</button>
+          <input type="range" min={MIN_CANVAS_HEIGHT} max={MAX_CANVAS_HEIGHT} step="5" value={canvasHeight} onChange={(event) => resizeCanvasHeight(event.target.value)} className="w-16 accent-blue-600" aria-label="Canvas height" />
+          <button type="button" aria-label="Extend canvas" disabled={canvasHeight >= MAX_CANVAS_HEIGHT} onClick={() => resizeCanvasHeight(canvasHeight + 10)} className="grid h-7 w-7 place-items-center rounded border border-slate-300 bg-white text-base hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-35">+</button>
           <span className="w-9 text-right tabular-nums">{Math.round(canvasHeight)}%</span>
         </div>
       </div>
@@ -1087,7 +1105,7 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
           : !(data.canvasElements || []).length && !data.zones.length && !data.items.length && !overlayBlocks.length
             ? <div className="pointer-events-none absolute inset-0 grid place-items-center px-6 text-center text-sm text-slate-500">{compositionOnly ? "Blank canvas · add content with the toolbar" : "Blank canvas · add targets or upload a background"}</div>
             : null}
-        <div className="pointer-events-none absolute z-[55] border border-dashed border-amber-500/80 shadow-[0_0_0_1px_rgba(255,255,255,0.65)]" style={{ inset: `${SAFE_ZONE_INSET_PERCENT}%` }} aria-hidden="true">
+        <div className="pointer-events-none absolute z-[55] border border-dashed border-amber-500/80 shadow-[0_0_0_1px_rgba(255,255,255,0.65)]" data-canvas-safe-area style={{ inset: `${SAFE_ZONE_INSET_PERCENT}cqw` }} aria-hidden="true">
           <span className="absolute left-1 top-1 rounded bg-amber-50/90 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-800 shadow-sm">Safe area</span>
         </div>
         {snapGuides.x !== null && <div className="pointer-events-none absolute bottom-0 top-0 z-[60] w-px bg-fuchsia-500 shadow-[0_0_0_1px_rgba(255,255,255,0.8)]" style={{ left: `${snapGuides.x}%` }} aria-hidden="true" />}
@@ -1163,7 +1181,7 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
             </>}
             {element.type === "table" ? boxResizeHandles(element, true) : (element.type === "text" || element.type === "image" || element.type === "number-line" || element.type === "algebra-tile") ? editingElementId === element.id ? boxResizeHandles(element) : null : element.type !== "shape" && <span onPointerDown={(event) => beginElementGesture(event, element, "element-resize")} className="absolute bottom-0 right-0 z-10 h-5 w-5 cursor-se-resize touch-none border-l border-t border-violet-700 bg-white" aria-label="Resize canvas element" />}
           </div>; })}
-          {overlayBlocks.map((overlay) => <div key={overlay.id} data-nudge-kind="overlay" data-nudge-id={overlay.id} data-canvas-object onPointerDown={(event) => beginOverlayGesture(event, overlay, "overlay-move")} onClick={(event) => { event.stopPropagation(); setEditingOverlayId(overlay.id); setEditingElementId(null); }} className={`absolute z-20 box-border cursor-move touch-none overflow-hidden ${overlay.hideLabel ? "bg-transparent" : "bg-white/80"} ${editingOverlayId === overlay.id ? "ring-2 ring-emerald-500" : "ring-1 ring-emerald-300 hover:ring-2"}`} style={{ left: `${overlay.bounds.x}%`, top: `${overlay.bounds.y}%`, width: `${overlay.bounds.width}%`, height: `${overlay.bounds.height}%` }}>
+          {overlayBlocks.map((overlay) => <div key={overlay.id} data-nudge-kind="overlay" data-nudge-id={overlay.id} data-canvas-object onPointerDown={(event) => beginOverlayGesture(event, overlay, "overlay-move")} onClick={(event) => { event.stopPropagation(); setEditingOverlayId(overlay.id); setEditingElementId(null); }} className={`absolute z-20 box-border cursor-move touch-none overflow-hidden ${overlay.hideLabel ? "bg-transparent" : "bg-white/80"} ${editingOverlayId === overlay.id ? "ring-2 ring-emerald-500" : "ring-1 ring-emerald-300 hover:ring-2"}`} style={{ left: `${overlay.bounds.x}%`, top: `${overlay.bounds.y}%`, width: overlay.autoWidth ? "max-content" : `${overlay.bounds.width}%`, height: `${overlay.bounds.height}%` }}>
             {!overlay.hideLabel && <span className="pointer-events-none absolute left-1 top-1 z-20 rounded bg-emerald-700 px-1.5 py-0.5 text-[1.1cqw] font-bold text-white">{overlay.label}</span>}
             <div className={`pointer-events-none h-full w-full overflow-hidden ${overlay.hideLabel ? "" : "p-[1cqw] pt-[3cqw]"}`}>{overlay.content}</div>
             {editingOverlayId === overlay.id && <>

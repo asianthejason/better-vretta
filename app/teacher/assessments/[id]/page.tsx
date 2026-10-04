@@ -1181,13 +1181,20 @@ export default function AssessmentEditorPage({
       console.error("Could not load reference library:", referenceError.message);
     }
 
-    const { data: imageData, error: imageError } = await supabase
-      .from("account_images")
-      .select("*")
-      .order("created_at", { ascending: false });
-
-    if (imageError) {
-      console.error("Could not load account image library:", imageError.message);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (sessionData.session?.access_token) {
+        const response = await fetch("/api/account-images/recover", { method: "POST", headers: { Authorization: `Bearer ${sessionData.session.access_token}` } });
+        if (!response.ok) console.error("Could not recover past image uploads.");
+      }
+    } catch (error) { console.error("Could not recover past image uploads:", error); }
+    const imageData: AccountImage[] = [];
+    for (let offset = 0; ; offset += 500) {
+      const { data, error } = await supabase.from("account_images").select("*")
+        .order("created_at", { ascending: false }).order("id").range(offset, offset + 499);
+      if (error) { console.error("Could not load account image library:", error.message); break; }
+      imageData.push(...(data || []) as AccountImage[]);
+      if (!data || data.length < 500) break;
     }
 
     let hydrated = {
@@ -3830,6 +3837,7 @@ export default function AssessmentEditorPage({
                 id: entry.id,
                 label: `Dropdown ${index + 1}`,
                 bounds: getDropdownBounds(entry, index),
+                autoWidth: true,
                 hideLabel: true,
                 content: <CanvasDropdownField disabled ariaLabel={`Dropdown ${index + 1}`} options={getDropdownEntryOptions(entry)} />,
                 editor: dropdownEditor(entry, index),

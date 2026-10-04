@@ -81,6 +81,11 @@ test("actual question editor restores unfinished setup and publishes a draft onl
   await expect(page.getByText("Published", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Edit", exact: true }).click();
   await page.getByRole("button", { name: "Save draft", exact: true }).click();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Resume draft", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Edit", exact: true }).click();
+  await page.getByRole("button", { name: "Extend canvas", exact: true }).click();
+  await page.getByRole("button", { name: "Save draft", exact: true }).click();
   await expect(page.getByRole("status")).toHaveText("Draft saved");
   await page.getByRole("button", { name: "Close", exact: true }).click();
   await page.evaluate(() => {

@@ -11,6 +11,7 @@ test.beforeAll(async () => {
         const snapshot=useMemo(()=>({text,file,preview}),[text,file,preview]);
         const drafts=useQuestionDrafts({ownerId:"teacher",assessmentId:"assessment",snapshot,enabled:open});
         return <><button onClick={()=>{drafts.begin();setOpen(true)}}>New question</button>
+          <button onClick={()=>{setText("Published text");drafts.begin("published-question");setOpen(true)}}>Edit question</button>
           {open&&<><input aria-label="Question text" value={text} onChange={e=>setText(e.target.value)}/><input aria-label="Image" type="file" onChange={e=>{setFile(e.target.files[0]);setPreview(URL.createObjectURL(e.target.files[0]))}}/>
           <button onClick={async()=>{await drafts.save(false);setOpen(false);setText("");setFile(null);setPreview("")}}>Close editor</button>
           <button onClick={()=>drafts.save()}>Save draft</button><button onClick={async()=>{await drafts.complete();setOpen(false)}}>Publish</button>
@@ -100,4 +101,18 @@ test("reconnecting retries all offline drafts, not only the currently edited que
   await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("cloud-drafts") || "[]").length)).toBe(2);
   const texts = await page.evaluate(() => JSON.parse(localStorage.getItem("cloud-drafts") || "[]").map((row: { snapshot: { text: string } }) => row.snapshot.text).sort());
   expect(texts).toEqual(["First offline question", "Second offline question"]);
+});
+
+test("opening and closing an unchanged published question does not create a draft", async ({ page }) => {
+  await open(page);
+  await page.getByRole('button', {name:'Edit question',exact:true}).click();
+  await expect(page.getByLabel('Question text')).toHaveValue('Published text');
+  await page.getByRole('button', {name:'Save draft',exact:true}).click();
+  await page.getByRole('button', {name:'Close editor',exact:true}).click();
+  await expect(page.getByRole('button', {name:'Resume draft',exact:true})).toHaveCount(0);
+  expect(await page.evaluate(() => localStorage.getItem('cloud-drafts'))).toBeNull();
+  await page.getByRole('button', {name:'Edit question',exact:true}).click();
+  await page.getByLabel('Question text').fill('Changed text');
+  await page.getByRole('button', {name:'Close editor',exact:true}).click();
+  await expect(page.getByRole('button', {name:'Resume draft',exact:true})).toHaveCount(1);
 });

@@ -31,8 +31,8 @@ export function DropdownQuestionPreview({
   onAnswer?: (id: string, value: string) => void;
 }) {
   const selectFor = (entry: DropdownEntry, index: number) => (
-    <span key={entry.id} className="mx-1 inline-block h-12 w-36 align-middle">
-      <CanvasDropdownField ariaLabel={`Dropdown ${index + 1}`} disabled={!interactive} options={getDropdownEntryOptions(entry)} value={interactive ? answers[entry.id] || "" : ""} onChange={(answer) => onAnswer?.(entry.id, answer)} />
+    <span key={entry.id} className="mx-1 inline-block h-12 align-middle">
+      <CanvasDropdownField canvas={false} ariaLabel={`Dropdown ${index + 1}`} disabled={!interactive} options={getDropdownEntryOptions(entry)} value={interactive ? answers[entry.id] || "" : ""} onChange={(answer) => onAnswer?.(entry.id, answer)} />
     </span>
   );
 

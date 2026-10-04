@@ -22,6 +22,19 @@ export function useQuestionDrafts<T extends Record<string, unknown>>({ ownerId, 
   const pendingRemote = useRef(new Map<string, QuestionDraft<T>>());
   const pendingLocal = useRef(0);
   const sequence = useRef(0);
+  const lastContent = useRef<string | null>(null);
+  const fileIds = useRef(new WeakMap<Blob, number>());
+  const nextFileId = useRef(0);
+  function contentKey(value: T) {
+    const { questionBuilderStep, questionSetupCollapsed, splitEditorTab, ...content } = value;
+    return JSON.stringify(content, (_, entry) => {
+      if (entry instanceof Blob) {
+        if (!fileIds.current.has(entry)) fileIds.current.set(entry, ++nextFileId.current);
+        return { draftFileIdentity: fileIds.current.get(entry) };
+      }
+      return entry;
+    });
+  }
 
   function store(record: QuestionDraft<T>) {
     const revision = ++sequence.current;
@@ -85,6 +98,13 @@ export function useQuestionDrafts<T extends Record<string, unknown>>({ ownerId, 
 
   useEffect(() => {
     if (!enabled || !ownerId || !assessmentId || !active.current) return;
+    const key = contentKey(snapshot);
+    if (lastContent.current === key) return;
+    if (lastContent.current === null && active.current.questionId) {
+      lastContent.current = key;
+      return;
+    }
+    lastContent.current = key;
     const record: QuestionDraft<T> = {
       id: active.current.id, owner_id: ownerId, assessment_id: assessmentId,
       question_id: active.current.questionId, status: "draft", snapshot,
@@ -125,6 +145,7 @@ export function useQuestionDrafts<T extends Record<string, unknown>>({ ownerId, 
   function begin(questionId: string | null = null, id = crypto.randomUUID()) {
     active.current = { id, questionId };
     latest.current = null;
+    lastContent.current = null;
     setActiveId(id);
     setMessage("");
   }
@@ -133,6 +154,8 @@ export function useQuestionDrafts<T extends Record<string, unknown>>({ ownerId, 
     const restored = await decodeDraft<T>(hydrated);
     lastTimestamp.current = Math.max(lastTimestamp.current, Date.parse(record.updated_at));
     begin(record.question_id, record.id);
+    lastContent.current = contentKey(restored);
+    latest.current = { ...record, snapshot: restored };
     return restored;
   }
   async function save(waitForCloud = true) {
