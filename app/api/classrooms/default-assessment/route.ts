@@ -1,9 +1,20 @@
 import { adminClient } from "@/lib/teacherBilling";
+import { createClient } from "@supabase/supabase-js";
 
 const SOURCE_ASSESSMENT_ID = "9172cd6c-e319-40a3-821e-84a6c365508b";
 
 function assessmentCode() {
   return crypto.randomUUID().replaceAll("-", "").slice(0, 6).toUpperCase();
+}
+
+function authenticatedClient(token: string) {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !anonKey) throw new Error("Supabase is not configured.");
+  return createClient(url, anonKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { Authorization: `Bearer ${token}` } },
+  });
 }
 
 export async function POST(request: Request) {
@@ -14,6 +25,7 @@ export async function POST(request: Request) {
     if (typeof classroomId !== "string") return Response.json({ error: "Invalid classroom." }, { status: 400 });
 
     const admin = adminClient();
+    const teacherClient = authenticatedClient(token);
     const { data: authData, error: authError } = await admin.auth.getUser(token);
     if (authError || !authData.user) return Response.json({ error: "Please sign in again." }, { status: 401 });
 
@@ -41,7 +53,7 @@ export async function POST(request: Request) {
       .maybeSingle();
     if (existing) return Response.json({ created: false, assessmentId: existing.id });
 
-    const { data: copy, error: copyError } = await admin.from("assessments").insert({
+    const { data: copy, error: copyError } = await teacherClient.from("assessments").insert({
       teacher_id: classroom.teacher_id,
       classroom_id: classroomId,
       title: source.title,
@@ -61,7 +73,7 @@ export async function POST(request: Request) {
       await admin.from("assessments").delete().eq("id", copy.id);
       return Response.json({ error: "The example questions are unavailable." }, { status: 503 });
     }
-    const { error: insertError } = await admin.from("questions").insert(
+    const { error: insertError } = await teacherClient.from("questions").insert(
       questions.map((question) => ({ ...question, assessment_id: copy.id })),
     );
     if (insertError) {

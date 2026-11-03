@@ -200,6 +200,13 @@ type QuestionTemplate = {
   question: Question;
 };
 
+type DuplicateQuestionTarget = {
+  id: string;
+  title: string;
+  classroom_id: string;
+  classroomName: string;
+};
+
 function asSingleViewQuestion(question: Question): Question {
   const questionData = structuredClone(question.question_data);
   questionData.layout = "standard";
@@ -650,6 +657,7 @@ export default function AssessmentEditorPage({
   const [dragDropItemPreviewUrls, setDragDropItemPreviewUrls] = useState<Record<string, string>>({});
   const selectedDragDropItemFilesRef = useRef<Record<string, File>>({});
   const uploadedDragDropFilesRef = useRef(new WeakMap<File, { imageUrl: string; imagePath: string }>());
+  const duplicatedQuestionScrollTargetRef = useRef<string | null>(null);
 
   const [questionLayout, setQuestionLayout] =
     useState<QuestionLayout>("standard");
@@ -766,6 +774,11 @@ export default function AssessmentEditorPage({
   const [draggedQuestionId, setDraggedQuestionId] = useState<string | null>(null);
   const [dragOverQuestionId, setDragOverQuestionId] = useState<string | null>(null);
   const [reorderingQuestions, setReorderingQuestions] = useState(false);
+  const [duplicatingQuestionId, setDuplicatingQuestionId] = useState<string | null>(null);
+  const [deletingQuestionId, setDeletingQuestionId] = useState<string | null>(null);
+  const [duplicateQuestionSource, setDuplicateQuestionSource] = useState<Question | null>(null);
+  const [duplicateQuestionTargets, setDuplicateQuestionTargets] = useState<DuplicateQuestionTarget[]>([]);
+  const [loadingDuplicateQuestionTargets, setLoadingDuplicateQuestionTargets] = useState(false);
   const [savingTemplateQuestionId, setSavingTemplateQuestionId] = useState<string | null>(null);
   const [templateSaveTarget, setTemplateSaveTarget] = useState<{ question: Question; questionNumber: number } | null>(null);
   const [templateNameDraft, setTemplateNameDraft] = useState("");
@@ -1106,6 +1119,19 @@ export default function AssessmentEditorPage({
 
     getParams();
   }, [params]);
+
+  useEffect(() => {
+    const targetId = duplicatedQuestionScrollTargetRef.current;
+    if (!targetId || !questions.some((question) => question.id === targetId)) return;
+    duplicatedQuestionScrollTargetRef.current = null;
+    const animationFrame = window.requestAnimationFrame(() => {
+      document.getElementById(`question-${targetId}`)?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    });
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [questions]);
 
   useEffect(() => {
     function handlePointerMove(event: globalThis.PointerEvent) {
@@ -3488,28 +3514,70 @@ export default function AssessmentEditorPage({
     }
   }
 
-  async function duplicateQuestion(question: Question) {
-    if (!assessmentId) return;
+  async function toggleDuplicateQuestionMenu(question: Question) {
+    if (!assessmentId || duplicatingQuestionId) return;
+    if (duplicateQuestionSource?.id === question.id) {
+      setDuplicateQuestionSource(null);
+      return;
+    }
+    setDuplicateQuestionSource(question);
+    setLoadingDuplicateQuestionTargets(true);
+    const [{ data: assessmentRows, error }, { data: classroomRows }] = await Promise.all([
+      supabase.from("assessments").select("id,title,classroom_id").order("created_at", { ascending: false }),
+      supabase.from("classrooms").select("id,name"),
+    ]);
+    if (error) {
+      alert(`Assessment destinations could not be loaded: ${error.message}`);
+      setDuplicateQuestionSource(null);
+      setLoadingDuplicateQuestionTargets(false);
+      return;
+    }
+    const classroomNames = new Map((classroomRows || []).map((classroom) => [classroom.id, classroom.name]));
+    setDuplicateQuestionTargets((assessmentRows || []).filter(
+      (target): target is { id: string; title: string; classroom_id: string } => Boolean(target.classroom_id) && target.id !== assessmentId,
+    ).map((target) => ({
+      ...target,
+      classroomName: classroomNames.get(target.classroom_id) || "Classroom",
+    })));
+    setLoadingDuplicateQuestionTargets(false);
+  }
 
-    const { data, error } = await supabase
-      .from("questions")
-      .insert({
+  async function duplicateQuestion(question: Question, targetAssessmentId = assessmentId) {
+    if (!question || !targetAssessmentId || duplicatingQuestionId) return;
+
+    setDuplicatingQuestionId(question.id);
+    const { data, error } = targetAssessmentId === assessmentId
+      ? await supabase.from("questions").insert({
         assessment_id: assessmentId,
         question_type: question.question_type,
         prompt: question.prompt,
         question_data: question.question_data,
         question_order: getNextQuestionOrder(),
-      })
-      .select("id")
-      .single();
+      }).select("*").single()
+      : await supabase.rpc("duplicate_question", {
+        source_question: question.id,
+        target_assessment: targetAssessmentId,
+      });
 
     if (error) {
       alert(error.message);
+      setDuplicatingQuestionId(null);
       return;
     }
 
-    setExpandedQuestionIds((current) => [...current, data.id]);
-    loadAssessment(assessmentId);
+    const duplicate = data as Question;
+    if (targetAssessmentId === assessmentId) {
+      duplicatedQuestionScrollTargetRef.current = duplicate.id;
+      setExpandedQuestionIds((current) => [...current, duplicate.id]);
+      setQuestions((current) => [...current, duplicate].sort((left, right) =>
+        left.question_order - right.question_order || left.id.localeCompare(right.id)
+      ));
+    } else {
+      const destination = duplicateQuestionTargets.find((target) => target.id === targetAssessmentId);
+      alert(`Question duplicated to ${destination?.title || "the selected assessment"}.`);
+    }
+    setDuplicatingQuestionId(null);
+    setDuplicateQuestionSource(null);
   }
 
   function openSaveTemplateDialog(question: Question, questionNumber: number) {
@@ -3558,13 +3626,22 @@ export default function AssessmentEditorPage({
       return;
     }
 
+    const previousQuestions = questions;
+    const wasExpanded = expandedQuestionIds.includes(questionId);
+    setDeletingQuestionId(questionId);
+    setQuestions((current) => current.filter((question) => question.id !== questionId));
+    setExpandedQuestionIds((current) => current.filter((id) => id !== questionId));
+
     const { error } = await supabase
       .from("questions")
       .delete()
       .eq("id", questionId);
 
     if (error) {
+      setQuestions(previousQuestions);
+      if (wasExpanded) setExpandedQuestionIds((current) => current.includes(questionId) ? current : [...current, questionId]);
       alert(error.message);
+      setDeletingQuestionId(null);
       return;
     }
 
@@ -3572,7 +3649,7 @@ export default function AssessmentEditorPage({
       resetQuestionForm();
     }
 
-    loadAssessment(assessmentId);
+    setDeletingQuestionId(null);
   }
 
   const canvasResponsePreview = questionType === "multiple-choice"
@@ -5250,6 +5327,7 @@ export default function AssessmentEditorPage({
               {questions.map((question, index) => (
                 <div
                   key={question.id}
+                  id={`question-${question.id}`}
                   onDragOver={(event) => {
                     event.preventDefault();
                     event.dataTransfer.dropEffect = "move";
@@ -5261,7 +5339,7 @@ export default function AssessmentEditorPage({
                     }
                   }}
                   onDrop={(event) => handleQuestionDrop(event, question.id)}
-                  className={`${expandedQuestionIds.includes(question.id) ? "overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm" : ""} ${dragOverQuestionId === question.id && draggedQuestionId !== question.id ? "rounded-2xl ring-2 ring-blue-400 ring-offset-2" : ""}`}
+                  className={`${expandedQuestionIds.includes(question.id) ? "rounded-2xl border border-slate-200 bg-white shadow-sm" : ""} ${dragOverQuestionId === question.id && draggedQuestionId !== question.id ? "rounded-2xl ring-2 ring-blue-400 ring-offset-2" : ""}`}
                 >
                   <div
                     role="button"
@@ -5311,10 +5389,17 @@ export default function AssessmentEditorPage({
                         ))}
                       </button>
                       <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-600 transition-transform ${expandedQuestionIds.includes(question.id) ? "rotate-90" : ""}`}>›</span>
-                      <span className="min-w-0">
-                        <span className="block text-sm font-semibold text-slate-900">Question {index + 1} <span className="ml-2 rounded bg-emerald-100 px-2 py-0.5 text-xs text-emerald-800">Published</span></span>
-                        <span className="mt-0.5 block truncate text-sm text-slate-500">{question.prompt}</span>
-                      </span>
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-slate-900">Question {index + 1} <span className="ml-2 rounded bg-emerald-100 px-2 py-0.5 text-xs text-emerald-800">Published</span></div>
+                        {question.question_data.promptHtml ? (
+                          <div
+                            className="collapsed-question-preview rich-text-content mt-0.5 text-sm text-slate-500"
+                            dangerouslySetInnerHTML={{ __html: question.question_data.promptHtml }}
+                          />
+                        ) : (
+                          <div className="mt-0.5 truncate text-sm text-slate-500">{question.prompt}</div>
+                        )}
+                      </div>
                     </div>
                     <div className="flex gap-2">
                       <button
@@ -5328,17 +5413,52 @@ export default function AssessmentEditorPage({
                       >
                         {savingTemplateQuestionId === question.id ? "Saving…" : "Save as template"}
                       </button>
+                      <div className="relative inline-flex" onClick={(event) => event.stopPropagation()} onBlur={(event) => {
+                        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDuplicateQuestionSource(null);
+                      }}>
+                        <button
+                          type="button"
+                          disabled={duplicatingQuestionId !== null}
+                          onClick={() => void duplicateQuestion(question)}
+                          className="rounded-l-lg border border-r-0 border-slate-300 px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50 hover:text-slate-900 disabled:cursor-wait disabled:opacity-50"
+                        >
+                          {duplicatingQuestionId === question.id ? "Duplicating…" : "Duplicate"}
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Choose another assessment for Question ${index + 1}`}
+                          aria-haspopup="menu"
+                          aria-expanded={duplicateQuestionSource?.id === question.id}
+                          disabled={duplicatingQuestionId !== null}
+                          onClick={() => void toggleDuplicateQuestionMenu(question)}
+                          className="rounded-r-lg border border-slate-300 px-2 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50 hover:text-slate-900 disabled:cursor-wait disabled:opacity-50"
+                        >
+                          ▾
+                        </button>
+                        {duplicateQuestionSource?.id === question.id && (
+                          <div role="menu" className="absolute right-0 top-full z-30 mt-1 max-h-80 w-80 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1.5 text-left shadow-xl">
+                            {loadingDuplicateQuestionTargets ? <p className="px-3 py-2 text-sm text-slate-500">Loading assessments…</p> : duplicateQuestionTargets.length === 0 ? <p className="px-3 py-2 text-sm text-slate-500">No other assessments available.</p> : Array.from(
+                              duplicateQuestionTargets.reduce((groups, target) => {
+                                const group = groups.get(target.classroomName) || [];
+                                group.push(target);
+                                groups.set(target.classroomName, group);
+                                return groups;
+                              }, new Map<string, DuplicateQuestionTarget[]>()),
+                            ).map(([classroomName, targets]) => (
+                              <div key={classroomName} className="py-1 first:pt-0 last:pb-0">
+                                <p className="px-3 py-1 text-[10px] font-extrabold uppercase tracking-wider text-slate-400">{classroomName}</p>
+                                {targets.map((target) => (
+                                  <button key={target.id} type="button" role="menuitem" onClick={() => void duplicateQuestion(question, target.id)} className="block w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-blue-50 hover:text-blue-800">
+                                    {target.title}
+                                  </button>
+                                ))}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                       <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          duplicateQuestion(question);
-                        }}
-                        className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-                      >
-                        Duplicate
-                      </button>
-                      <button
+                        disabled={deletingQuestionId !== null}
                         onClick={(event) => {
                           event.stopPropagation();
                           startEditingQuestion(question);
@@ -5352,9 +5472,9 @@ export default function AssessmentEditorPage({
                           event.stopPropagation();
                           deleteQuestion(question.id);
                         }}
-                        className="rounded-lg border border-red-800 px-4 py-2 text-sm font-semibold text-red-300 hover:bg-red-950"
+                        className="rounded-lg border border-red-800 px-4 py-2 text-sm font-semibold text-red-300 hover:bg-red-950 disabled:cursor-wait disabled:opacity-50"
                       >
-                        Delete
+                        {deletingQuestionId === question.id ? "Deleting…" : "Delete"}
                       </button>
                     </div>
                   </div>

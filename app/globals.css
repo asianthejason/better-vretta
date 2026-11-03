@@ -194,6 +194,22 @@ a:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.collapsed-question-preview {
+  height: 2.5rem;
+  line-height: 2.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collapsed-question-preview > :is(div, p) {
+  display: inline;
+}
+
+.collapsed-question-preview br {
+  display: none;
+}
+
 .rich-text-content math[data-math-expression] {
   font-family: "STIX Two Math", "Cambria Math", "Latin Modern Math", math, serif;
   font-size: 1.15em;
@@ -267,6 +283,27 @@ math[data-math-expression] :is(mrow[data-radical-overline="true"], menclose[nota
   min-height: 2.2em;
   padding: 0.47em 0.65em;
   width: 100%;
+}
+
+.collapsed-question-preview [data-text-box="true"] {
+  background: transparent;
+  border: 0;
+  display: inline;
+  margin: 0;
+  min-height: 0;
+  padding: 0;
+  width: auto;
+}
+
+.collapsed-question-preview :is(img, svg, canvas) {
+  display: none;
+}
+
+.collapsed-question-preview :is(ul, ol, li) {
+  display: inline;
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }
 
 .rich-text-editor [data-text-box="true"] {
