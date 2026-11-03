@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { requireAccountRole } from "@/lib/roleGuard";
 import { compareStudentNamesByLastName } from "@/lib/studentNameSort";
 import { supabase } from "@/lib/supabaseClient";
+import AccountEmailSearch from "./AccountEmailSearch";
 
 type Classroom = { id: string; name: string; join_code: string };
 type Student = {
@@ -16,6 +17,7 @@ type ClassroomTeacher = {
   is_owner: boolean;
   profiles: { full_name: string; email: string } | null;
 };
+type PendingMembership = { email: string; role: "teacher" | "student"; created_at: string };
 
 export default function ClassroomsPage() {
   const [userId, setUserId] = useState("");
@@ -23,6 +25,7 @@ export default function ClassroomsPage() {
   const [selected, setSelected] = useState("");
   const [students, setStudents] = useState<Student[]>([]);
   const [teachers, setTeachers] = useState<ClassroomTeacher[]>([]);
+  const [pendingMemberships, setPendingMemberships] = useState<PendingMembership[]>([]);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [teacherEmail, setTeacherEmail] = useState("");
@@ -56,7 +59,7 @@ export default function ClassroomsPage() {
   }
 
   async function loadClass(id: string) {
-    const [{ data: roster }, { data: teacherRows }] = await Promise.all([
+    const [{ data: roster }, { data: teacherRows }, { data: pendingRows }] = await Promise.all([
       supabase
         .from("classroom_students")
         .select("student_id,profiles(full_name,email)")
@@ -66,6 +69,11 @@ export default function ClassroomsPage() {
         .select("teacher_id,is_owner,profiles(full_name,email)")
         .eq("classroom_id", id)
         .order("is_owner", { ascending: false }),
+      supabase
+        .from("pending_classroom_memberships")
+        .select("email,role,created_at")
+        .eq("classroom_id", id)
+        .order("created_at"),
     ]);
 
     const sortedStudents = ([...(roster || [])] as unknown as Student[]).sort((left, right) =>
@@ -78,6 +86,7 @@ export default function ClassroomsPage() {
     );
     setStudents(sortedStudents);
     setTeachers((teacherRows || []) as unknown as ClassroomTeacher[]);
+    setPendingMemberships((pendingRows || []) as PendingMembership[]);
   }
 
   async function createClass() {
@@ -96,25 +105,39 @@ export default function ClassroomsPage() {
 
   async function addStudent() {
     if (!selected || !email.trim()) return;
-    const { error } = await supabase.rpc("add_student_to_classroom", {
+    const { data, error } = await supabase.rpc("add_student_to_classroom", {
       target_classroom: selected,
       student_email: email.trim(),
     });
 
     if (error) return alert(error.message);
     setEmail("");
-    void loadClass(selected);
+    await loadClass(selected);
+    if (data === "pending") alert("Invitation saved. This student will be added automatically when their account is created.");
   }
 
   async function addTeacher() {
     if (!selected || !teacherEmail.trim()) return;
-    const { error } = await supabase.rpc("add_teacher_to_classroom", {
+    const { data, error } = await supabase.rpc("add_teacher_to_classroom", {
       target_classroom: selected,
       teacher_email: teacherEmail.trim(),
     });
     if (error) return alert(error.message);
     setTeacherEmail("");
-    void loadClass(selected);
+    await loadClass(selected);
+    if (data === "pending") alert("Invitation saved. This teacher will be added automatically when their teacher account is activated.");
+  }
+
+  async function removePending(membership: PendingMembership) {
+    const { error } = await supabase.rpc("remove_pending_classroom_membership", {
+      target_classroom: selected,
+      target_email: membership.email,
+      target_role: membership.role,
+    });
+    if (error) return alert(error.message);
+    setPendingMemberships((current) => current.filter(
+      (item) => item.email !== membership.email || item.role !== membership.role,
+    ));
   }
 
   async function removeTeacher(teacher: ClassroomTeacher) {
@@ -144,6 +167,7 @@ export default function ClassroomsPage() {
     setSelected(remaining[0]?.id || "");
     setStudents([]);
     setTeachers([]);
+    setPendingMemberships([]);
   }
 
   async function removeStudent(student: Student) {
@@ -309,14 +333,11 @@ export default function ClassroomsPage() {
                     </div>
                     {canManageTeachers && (
                       <div className="flex w-full max-w-md gap-2">
-                        <input
+                        <AccountEmailSearch
+                          role="teacher"
                           value={teacherEmail}
-                          onChange={(event) => setTeacherEmail(event.target.value)}
-                          onKeyDown={(event) => event.key === "Enter" && void addTeacher()}
-                          type="email"
-                          placeholder="Teacher email address"
-                          aria-label="Teacher email address"
-                          className="min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-950 outline-none placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                          onChange={setTeacherEmail}
+                          onSubmit={() => void addTeacher()}
                         />
                         <button
                           type="button"
@@ -355,6 +376,17 @@ export default function ClassroomsPage() {
                         </div>
                       );
                     })}
+                    {pendingMemberships.filter((membership) => membership.role === "teacher").map((membership) => (
+                      <div key={`pending-teacher-${membership.email}`} className="grid min-w-[620px] grid-cols-[minmax(170px,0.8fr)_minmax(260px,1.4fr)_120px] items-center gap-5 border-b border-slate-200 bg-amber-50/50 px-4 py-3 last:border-b-0">
+                        <span className="text-sm font-extrabold text-amber-800">Pending signup</span>
+                        <span className="truncate text-sm text-slate-600">{membership.email}</span>
+                        {canManageTeachers && (
+                          <button type="button" onClick={() => void removePending(membership)} className="justify-self-end rounded-lg px-3 py-2 text-sm font-bold text-red-600 transition hover:bg-red-50">
+                            Remove
+                          </button>
+                        )}
+                      </div>
+                    ))}
                   </div>
 
                   <div className="mt-5 flex flex-col gap-4 border-t border-slate-200 pt-5 sm:flex-row sm:items-end sm:justify-between">
@@ -365,14 +397,12 @@ export default function ClassroomsPage() {
                       </p>
                     </div>
                     <div className="flex w-full max-w-md gap-2">
-                      <input
+                      <AccountEmailSearch
+                        role="student"
                         value={email}
-                        onChange={(event) => setEmail(event.target.value)}
-                        onKeyDown={(event) => event.key === "Enter" && void addStudent()}
-                        type="email"
-                        placeholder="Student email address"
-                        aria-label="Student email address"
-                        className="min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-950 outline-none placeholder:text-slate-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                        onChange={setEmail}
+                        onSubmit={() => void addStudent()}
+                        disabledAccountIds={new Set(students.map((student) => student.student_id))}
                       />
                       <button
                         type="button"
@@ -402,7 +432,16 @@ export default function ClassroomsPage() {
                         </div>
                       );
                     })}
-                    {students.length === 0 && (
+                    {pendingMemberships.filter((membership) => membership.role === "student").map((membership) => (
+                      <div key={`pending-student-${membership.email}`} className="grid min-w-[620px] grid-cols-[minmax(170px,0.8fr)_minmax(260px,1.4fr)_120px] items-center gap-5 border-b border-slate-200 bg-amber-50/50 px-4 py-3 last:border-b-0">
+                        <span className="text-sm font-extrabold text-amber-800">Pending signup</span>
+                        <span className="truncate text-sm text-slate-600">{membership.email}</span>
+                        <button type="button" onClick={() => void removePending(membership)} className="justify-self-end rounded-lg px-3 py-2 text-sm font-bold text-red-600 transition hover:bg-red-50">
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                    {students.length === 0 && pendingMemberships.every((membership) => membership.role !== "student") && (
                       <p className="px-4 py-8 text-center text-sm leading-6 text-slate-600">
                         No students are enrolled yet. Add one using their Jretta account email.
                       </p>
