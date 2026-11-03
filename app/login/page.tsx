@@ -165,10 +165,10 @@ export default function LoginPage() {
       <div className="w-full max-w-2xl">
         <Link href="/" className="flex items-center gap-3 font-bold tracking-tight">
           <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 text-white shadow-lg shadow-blue-200">J</span>
-          Jretta
+          Cloneretta
         </Link>
 
-        <p className="mt-12 text-sm font-semibold uppercase tracking-[0.18em] text-blue-600">Jretta account</p>
+        <p className="mt-12 text-sm font-semibold uppercase tracking-[0.18em] text-blue-600">Cloneretta account</p>
         <h1 className="mt-3 text-4xl font-bold tracking-tight">{mode === "login" ? "Welcome back" : "Create your account"}</h1>
 
         <p className="mt-3 leading-7 text-slate-500">

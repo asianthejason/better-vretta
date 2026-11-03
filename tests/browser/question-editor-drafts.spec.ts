@@ -17,9 +17,10 @@ test.beforeAll(async () => {
           loader: "js", resolveDir: process.cwd(),
           contents: args.path === "next/link" ? 'import React from "react";export default function Link(props){return React.createElement("a",props)}'
             : args.path.endsWith("roleGuard") ? 'export const requireAccountRole=async()=>({id:"teacher"});'
-            : `export const supabase={auth:{getUser:async()=>({data:{user:{id:"teacher"}}}),getSession:async()=>({data:{session:null}})},
+            : `export const getCachedAccessToken=()=>"test-token";
+export const supabase={auth:{getUser:async()=>({data:{user:{id:"teacher"}}}),getSession:async()=>({data:{session:{access_token:"test-token"}}})},
               from(table){let mutation=null;let target=null;const query={
-                select(){return query},eq(key,value){if(key==="id")target=value;return query},in(){return query},order(){return query},single(){return query},
+                select(){return query},eq(key,value){if(key==="id")target=value;return query},in(){return query},order(){return query},range(){return query},single(){return query},
                 upsert(value){mutation=value;return query},update(value){mutation=value;return query},
                 then(resolve){let rows=JSON.parse(localStorage.getItem(table)||"[]");
                   if(mutation){const row={...rows.find(r=>r.id===(target||mutation.id)),...mutation,id:target||mutation.id};rows=[...rows.filter(r=>r.id!==row.id),row];localStorage.setItem(table,JSON.stringify(rows))}
@@ -36,15 +37,87 @@ async function open(page: Page) {
   await page.goto("/");
   const stylesheets = await page.locator('link[rel="stylesheet"]').evaluateAll(links => links.map(link => (link as HTMLLinkElement).href));
   await page.route("**/__draft-editor-test", route => route.fulfill({ contentType: "text/html", body: '<div id="root"></div>' }));
+  await page.route("**/api/question-drafts**", async route => {
+    if (route.request().method() === "POST") {
+      const record = route.request().postDataJSON();
+      await page.evaluate((value) => {
+        const rows = JSON.parse(localStorage.getItem("question_drafts") || "[]");
+        localStorage.setItem("question_drafts", JSON.stringify([...rows.filter((row: { id: string }) => row.id !== value.id), value]));
+      }, record);
+      await route.fulfill({ contentType: "application/json", body: '{"saved":true}' });
+      return;
+    }
+    const drafts = await page.evaluate(() => JSON.parse(localStorage.getItem("question_drafts") || "[]"));
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ drafts }) });
+  });
   await page.goto("/__draft-editor-test");
   for (const url of stylesheets) await page.addStyleTag({ content: await (await page.request.get(url)).text() });
   await page.addScriptTag({ type: "module", content: javascript });
   await expect(page.getByRole("button", { name: "Add Question", exact: false })).toBeVisible();
 }
 
-test("actual question editor restores unfinished setup and publishes a draft only on request", async ({ page }) => {
+async function startNewQuestion(page: Page) {
+  await page.getByRole("button", { name: "Add Question", exact: false }).click();
+  await page.getByRole("button", { name: "Create new", exact: true }).click();
+}
+
+test("add question offers blank and template starting points", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => localStorage.setItem("questions", JSON.stringify([{
+    id: "source-question", assessment_id: "9172cd6c-e319-40a3-821e-84a6c365508b", question_type: "multiple-choice", prompt: "Template prompt", question_order: 1,
+    question_data: { layout: "split", canvas: { version: 2, elements: [] }, leftCanvas: { version: 2, elements: [] }, choices: ["A", "B"], correctAnswer: "A" },
+  }])));
   await open(page);
   await page.getByRole("button", { name: "Add Question", exact: false }).click();
+  await expect(page.getByRole("heading", { name: "How would you like to start?" })).toBeVisible();
+  await page.getByRole("button", { name: "Use a template", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Multiple Choice" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "Custom Templates" })).toBeVisible();
+  await page.getByRole("button", { name: "Use template Question 1", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Template preview" })).toBeAttached();
+  await expect(page.getByRole("button", { name: "Use template", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Use template", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "How should this template be displayed?" })).toBeVisible();
+  await page.getByRole("button", { name: /Single view/ }).click();
+  await expect(page.getByRole("button", { name: /^Multiple Choice/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("textbox", { name: "Canvas text" })).toContainText("Template prompt");
+});
+
+test("save as template uses an in-app naming dialog", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => localStorage.setItem("questions", JSON.stringify([{
+    id: "question-to-save", assessment_id: "assessment", question_type: "multiple-choice", prompt: "Reusable question", question_order: 1,
+    question_data: { layout: "standard", canvas: { version: 2, elements: [] }, choices: ["A", "B"], correctAnswer: "A" },
+  }])));
+  await open(page);
+  await page.getByRole("button", { name: "Save as template", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Save as template" })).toBeVisible();
+  await expect(page.getByLabel("Template name")).toHaveValue("Question 1 template");
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Save as template" })).toHaveCount(0);
+});
+
+test("custom template previews provide an in-app delete confirmation", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => localStorage.setItem("reference_builds", JSON.stringify([{
+    id: "10000000-0000-4000-8000-000000000001", name: "__question_template__:My template",
+    table_data: { question: { id: "saved-question", assessment_id: "assessment", question_type: "multiple-choice", prompt: "Saved template", question_order: 1, question_data: { layout: "standard", canvas: { version: 2, elements: [] }, choices: ["A", "B"], correctAnswer: "A" } } },
+  }])));
+  await open(page);
+  await page.getByRole("button", { name: "Add Question", exact: false }).click();
+  await page.getByRole("button", { name: "Use a template", exact: true }).click();
+  await page.getByRole("tab", { name: "Custom Templates" }).click();
+  await page.getByRole("button", { name: "Use template My template", exact: true }).click();
+  await page.getByRole("button", { name: "Delete template", exact: true }).click();
+  await expect(page.getByText("Delete permanently?", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Yes, delete", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Delete template", exact: true })).toBeVisible();
+});
+
+test("actual question editor restores unfinished setup and publishes a draft only on request", async ({ page }) => {
+  await open(page);
+  await startNewQuestion(page);
   await page.getByRole("button", { name: /^Dropdown/ }).click();
   await page.getByRole("button", { name: "Save draft", exact: true }).click();
   await expect(page.getByRole("status")).toHaveText("Draft saved");
@@ -109,7 +182,7 @@ test("actual question editor restores unfinished setup and publishes a draft onl
 
 test("location questions publish blank custom-sized options with more targets than items", async ({ page }) => {
   await open(page);
-  await page.getByRole("button", { name: "Add Question", exact: false }).click();
+  await startNewQuestion(page);
   await page.getByRole("button", { name: /^Drag & Drop/ }).click();
   await page.getByRole("button", { name: "One canvas", exact: true }).click();
   await page.getByRole("button", { name: "Save draft", exact: true }).click();
@@ -144,7 +217,7 @@ test("location questions publish blank custom-sized options with more targets th
 
 test("empty drag items show no placeholders and preserve entered content", async ({ page }) => {
   await open(page);
-  await page.getByRole("button", { name: "Add Question", exact: false }).click();
+  await startNewQuestion(page);
   await page.getByRole("button", { name: /^Drag & Drop/ }).click();
   await page.getByRole("button", { name: "One canvas", exact: true }).click();
   const firstItem = page.locator("[data-choice-item-id]").first();
@@ -165,7 +238,7 @@ test("empty drag items show no placeholders and preserve entered content", async
 
 test("deleting a draft keeps it removed after reload without publishing a question", async ({ page }) => {
   await open(page);
-  await page.getByRole("button", { name: "Add Question", exact: false }).click();
+  await startNewQuestion(page);
   await page.getByRole("button", { name: "Save draft", exact: true }).click();
   await expect(page.getByRole("status")).toHaveText("Draft saved");
   await page.getByRole("button", { name: "Close", exact: true }).click();
@@ -196,7 +269,7 @@ test("deleting a draft keeps it removed after reload without publishing a questi
 for (const mode of ["single", "multiple"]) {
   test(`multiple-choice ${mode} answers publish with blank choices`, async ({ page }) => {
     await open(page);
-    await page.getByRole("button", { name: "Add Question", exact: false }).click();
+    await startNewQuestion(page);
     await page.getByRole("button", { name: /^Multiple Choice/ }).click();
     await page.getByRole("button", { name: "One canvas", exact: true }).click();
     await page.getByRole("button", { name: mode === "single" ? "One answer" : "Multiple answers", exact: true }).first().click();

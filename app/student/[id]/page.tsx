@@ -780,11 +780,18 @@ export default function StudentAssessmentPage({
     return question.question_data.sortingItems?.find((item) => item.id === itemId);
   }
 
+  function getStudentDragDropData(question: Question) {
+    const canvas = question.question_data.canvas
+      ? normalizeQuestionCanvas(question.question_data.canvas)
+      : undefined;
+    return asLocationDragDropData(question.question_data.dragDrop, canvas);
+  }
+
   function questionIsAnswered(question: Question) {
     if (question.question_type === "multiple-choice") {
       return (multipleChoiceAnswers[question.id] || []).length > 0;
     }
-    if ((question.question_type === "drag-and-drop" || question.question_type === "sort-into-groups")) return isDragDropAnswered(normalizeDragDropData(question.question_data.dragDrop), dragDropResponses[question.id] || {});
+    if ((question.question_type === "drag-and-drop" || question.question_type === "sort-into-groups")) return isDragDropAnswered(getStudentDragDropData(question), dragDropResponses[question.id] || {});
     if (question.question_type === "dropdown") return dropdownIsAnswered(normalizeDropdownData(question.question_data.dropdown), dropdownResponses[question.id] || {});
 
     if (question.question_type === "short-answer") {
@@ -834,7 +841,7 @@ export default function StudentAssessmentPage({
     if (question.question_type === "multiple-choice") {
       return gradeMultipleChoice(question.question_data, multipleChoiceAnswers[question.id] || []);
     }
-    if ((question.question_type === "drag-and-drop" || question.question_type === "sort-into-groups")) return gradeDragDrop(normalizeDragDropData(question.question_data.dragDrop), dragDropResponses[question.id] || {}).isCorrect;
+    if ((question.question_type === "drag-and-drop" || question.question_type === "sort-into-groups")) return gradeDragDrop(getStudentDragDropData(question), dragDropResponses[question.id] || {}).isCorrect;
     if (question.question_type === "dropdown") return gradeDropdown(normalizeDropdownData(question.question_data.dropdown), dropdownResponses[question.id] || {}).isCorrect;
 
     if (question.question_type === "short-answer") {
@@ -905,7 +912,7 @@ export default function StudentAssessmentPage({
       };
     }
     if ((question.question_type === "drag-and-drop" || question.question_type === "sort-into-groups")) {
-      const data = normalizeDragDropData(question.question_data.dragDrop);
+      const data = getStudentDragDropData(question);
       const placements = dragDropResponses[question.id] || {};
       return { placements, ...gradeDragDrop(data, placements) };
     }
@@ -1090,7 +1097,7 @@ export default function StudentAssessmentPage({
           <div className="mx-auto flex min-h-20 max-w-7xl items-center justify-between px-6 py-4 lg:px-8">
             <Link href="/" className="flex items-center gap-3 font-bold tracking-tight">
               <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 text-white shadow-lg shadow-blue-200">J</span>
-              Jretta
+              Cloneretta
             </Link>
             <Link href="/student/dashboard" className="rounded-lg bg-slate-100 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200">Student Dashboard</Link>
           </div>
@@ -1146,7 +1153,7 @@ export default function StudentAssessmentPage({
     const alreadySubmitted = entryState?.studentStatus === "submitted";
     const ended = entryState?.runStatus === "ended";
     return <main className="min-h-screen bg-slate-950 text-white">
-      <header className="border-b border-slate-800"><div className="mx-auto flex min-h-20 max-w-5xl items-center justify-between px-6"><span className="font-bold">Jretta</span><Link href="/student/dashboard" className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-slate-300 hover:bg-slate-800">Student Dashboard</Link></div></header>
+      <header className="border-b border-slate-800"><div className="mx-auto flex min-h-20 max-w-5xl items-center justify-between px-6"><span className="font-bold">Cloneretta</span><Link href="/student/dashboard" className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-slate-300 hover:bg-slate-800">Student Dashboard</Link></div></header>
       <section className="mx-auto flex min-h-[calc(100vh-5rem)] max-w-2xl items-center justify-center px-6 py-16 text-center">
         <div aria-live="polite">
           <span className={`mx-auto grid size-16 place-items-center rounded-full text-2xl ${blocked ? "bg-red-500/20 text-red-300" : alreadySubmitted ? "bg-emerald-500/20 text-emerald-300" : "bg-blue-500/20 text-blue-300"}`}>{blocked ? "!" : alreadySubmitted ? "✓" : "…"}</span>
@@ -1288,7 +1295,13 @@ export default function StudentAssessmentPage({
                       : "absolute inset-x-0 top-0 w-full overflow-hidden"
                     : "contents"}
                 >
-                {canvas && !unifiedDragDropCanvas && <QuestionCanvas canvas={canvas} className="pointer-events-none absolute inset-0 h-full w-full border-0" />}
+                {canvas && !unifiedDragDropCanvas && <QuestionCanvas canvas={canvas} overlays={question.question_type === "fill-in-the-blank" ? (() => {
+                  const data = normalizeFillBlankData(question.question_data.fillBlank, question.question_data.template, question.question_data.blanks);
+                  return <>{data.blanks.map((blank, blankIndex) => {
+                    const bounds = getFillBlankBounds(blank, blankIndex);
+                    return <div key={blank.id} className="absolute z-20" style={{ left: `${bounds.x}%`, top: `${bounds.y}%`, width: `${bounds.width}%`, height: `${bounds.height}%` }}><CanvasFillBlankField blank={blank} value={fillBlankResponses[question.id]?.[blank.id] || ""} onChange={(value) => updateFillBlankResponse(question.id, blank.id, value)} /></div>;
+                  })}</>;
+                })() : undefined} className={`${question.question_type === "fill-in-the-blank" ? "" : "pointer-events-none"} absolute inset-0 h-full w-full border-0`} />}
                 {canvas && question.question_type === "dropdown" && (() => {
                   const data = normalizeDropdownData(question.question_data.dropdown);
                   return data.entries.map((entry, entryIndex) => {
@@ -1296,13 +1309,6 @@ export default function StudentAssessmentPage({
                     return <div key={entry.id} className="absolute z-20" style={{ left: `${bounds.x}%`, top: `${bounds.y}%`, width: `${bounds.width}%`, height: `${bounds.height}%` }}>
                       <CanvasDropdownField ariaLabel={`Dropdown ${entryIndex + 1}`} options={getDropdownEntryOptions(entry)} value={dropdownResponses[question.id]?.[entry.id] || ""} onChange={(value) => setDropdownResponses((current) => ({ ...current, [question.id]: { ...(current[question.id] || {}), [entry.id]: value } }))} />
                     </div>;
-                  });
-                })()}
-                {canvas && question.question_type === "fill-in-the-blank" && (() => {
-                  const data = normalizeFillBlankData(question.question_data.fillBlank, question.question_data.template, question.question_data.blanks);
-                  return data.blanks.map((blank, blankIndex) => {
-                    const bounds = getFillBlankBounds(blank, blankIndex);
-                    return <div key={blank.id} className="absolute z-20" style={{ left: `${bounds.x}%`, top: `${bounds.y}%`, width: `${bounds.width}%`, height: `${bounds.height}%` }}><CanvasFillBlankField blank={blank} value={fillBlankResponses[question.id]?.[blank.id] || ""} onChange={(value) => updateFillBlankResponse(question.id, blank.id, value)} /></div>;
                   });
                 })()}
                 {canvas && question.question_type === "multiple-choice" && (() => {
@@ -1316,7 +1322,7 @@ export default function StudentAssessmentPage({
                     const selected = (multipleChoiceAnswers[question.id] || []).includes(choiceValue);
                     return <button key={choiceIndex} type="button" role={selectionMode === "multiple" ? "checkbox" : "radio"} aria-label={choice || `Choice ${choiceIndex + 1}`} aria-checked={selected} onClick={() => selectMultipleChoiceAnswer(question, choiceValue)} style={fillsWrapper ? { width: "100%", height: "100%" } : layout.presentation === "content" ? { paddingTop: "1cqw", paddingBottom: "1cqw", paddingRight: "1.2cqw", paddingLeft: selectionMode === "multiple" ? "4cqw" : "1.2cqw", fontSize: "1.7cqw", width: `${contentSizes[choiceIndex].width}cqw`, height: `${contentSizes[choiceIndex].height}cqw` } : layout.presentation === "radio" ? { width: "3.2cqw", height: "3.2cqw" } : { width: `${layout.positions[choiceIndex]?.width ?? 6}cqw`, height: `${(layout.positions[choiceIndex]?.height ?? 10.5) * 9 / 16}cqw` }} className={`relative box-border flex shrink-0 flex-col ${layout.presentation === "content" ? "items-start text-left" : "items-center text-center"} whitespace-nowrap ${layout.positions[choiceIndex]?.textVerticalAlign === "top" ? "justify-start" : layout.positions[choiceIndex]?.textVerticalAlign === "bottom" ? "justify-end" : "justify-center"} border bg-white/50 font-medium text-black shadow-sm transition hover:border-blue-600 ${layout.presentation === "radio" ? "rounded-full border-2" : "rounded"} ${selected ? "border-blue-600 ring-2 ring-blue-300" : "border-slate-400"}`}>
                       {layout.presentation === "radio" && selected && <span className="h-[1.5cqw] w-[1.5cqw] rounded-full bg-blue-600" />}
-                      {layout.presentation === "content" && <>{selectionMode === "multiple" && <span className={`absolute left-[0.8cqw] top-1/2 inline-flex h-[1.5cqw] w-[1.5cqw] -translate-y-1/2 items-center justify-center rounded-sm border text-[1.1cqw] font-bold leading-none ${selected ? "border-blue-600 bg-blue-600 text-white" : "border-slate-500 bg-white"}`}>{selected ? "✓" : ""}</span>}{question.question_data.choiceImages?.[choiceIndex]?.imageUrl && <img src={question.question_data.choiceImages[choiceIndex].imageUrl} alt="" style={{ maxHeight: "10cqw", maxWidth: "14cqw", marginBottom: "0.5cqw" }} className="min-h-0 flex-1 object-contain" />}<span className="w-full">{question.question_data.choiceHtml?.[choiceIndex] ? <span className="rich-text-content inline" dangerouslySetInnerHTML={{ __html: question.question_data.choiceHtml[choiceIndex] }} /> : choice}</span></>}
+                      {layout.presentation === "content" && <>{selectionMode === "multiple" && <span className={`absolute left-[0.8cqw] top-1/2 inline-flex h-[1.5cqw] w-[1.5cqw] -translate-y-1/2 items-center justify-center rounded-sm border text-[1.1cqw] font-bold leading-none ${selected ? "border-blue-600 bg-blue-600 text-white" : "border-slate-500 bg-white"}`}>{selected ? "✓" : ""}</span>}{question.question_data.choiceImages?.[choiceIndex]?.imageUrl && <img src={question.question_data.choiceImages[choiceIndex].imageUrl} alt="" className="mb-[0.5cqw] h-0 min-h-0 w-full max-w-full flex-1 object-contain" />}<span className="w-full">{question.question_data.choiceHtml?.[choiceIndex] ? <span className="rich-text-content inline" dangerouslySetInnerHTML={{ __html: question.question_data.choiceHtml[choiceIndex] }} /> : choice}</span></>}
                     </button>;
                   };
                   return layout.grouped ? <div className={`absolute z-20 flex w-max ${layout.direction === "vertical" ? "flex-col" : "flex-row"}`} style={{ left: `${layout.x}%`, top: `${layout.y}%`, gap: "0.8cqw" }}>{choices.map((choice, choiceIndex) => option(choice, choiceIndex))}</div> : <>{choices.map((choice, choiceIndex) => <div key={choiceIndex} className="absolute z-20" style={{ left: `${layout.positions[choiceIndex]?.x ?? 8}%`, top: `${layout.positions[choiceIndex]?.y ?? 35 + choiceIndex * 12}%`, ...(layout.presentation === "box" ? { width: `${layout.positions[choiceIndex]?.width ?? 6}%`, height: `${layout.positions[choiceIndex]?.height ?? 10.5}%` } : {}) }}>{option(choice, choiceIndex, layout.presentation === "box")}</div>)}</>;

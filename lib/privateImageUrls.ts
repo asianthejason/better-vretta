@@ -106,7 +106,11 @@ export async function hydratePrivateImageUrls<T>(supabase: SupabaseClient, value
     }
   }));
   const stillUnresolvedPaths = paths.filter((path) => urls.get(path) === getCanonicalImageUrl(supabase, path));
-  const serverUrls = await createServerSignedUrls(supabase, stillUnresolvedPaths);
-  serverUrls.forEach((url, path) => urls.set(path, url));
+  // The signing endpoint accepts at most 200 paths per request. Large image
+  // libraries must not lose their authorized URLs because of that limit.
+  for (let offset = 0; offset < stillUnresolvedPaths.length; offset += 200) {
+    const serverUrls = await createServerSignedUrls(supabase, stillUnresolvedPaths.slice(offset, offset + 200));
+    serverUrls.forEach((url, path) => urls.set(path, url));
+  }
   return applyPrivateImageUrls(value, urls);
 }

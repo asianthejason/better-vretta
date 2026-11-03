@@ -119,11 +119,11 @@ test("typing into resized empty choices readjusts every shared box", () => {
   assert.ok(longer[0].width > typed[0].width);
 });
 
-test("custom sizing fits each filled choice while preserving empty box dimensions", () => {
-  const items = [{ id: "a", content: "Short", width: 30, height: 25 }, { id: "b", content: "A much longer answer", width: 30, height: 25 }, { id: "c", content: "", width: 20, height: 10 }];
+test("custom sizing preserves each filled and empty choice box dimension", () => {
+  const items = [{ id: "a", content: "Short", width: 18, height: 12 }, { id: "b", content: "A much longer answer", width: 30, height: 25 }, { id: "c", content: "", width: 20, height: 10 }];
   const sizes = getChoiceContentSizes(items, { sameSize: false, canvasHeight: 80 });
-  assert.ok(sizes[0].width < sizes[1].width);
-  assert.notEqual(sizes[0].width, 30);
+  assert.deepEqual(sizes[0], { width: 18, height: 12 * 0.8 });
+  assert.deepEqual(sizes[1], { width: 30, height: 20 });
   assert.deepEqual(sizes[2], { width: 20, height: 8 });
   const shared = getChoiceContentSizes(items, { sameSize: true });
   assert.deepEqual(shared[0], shared[1]);

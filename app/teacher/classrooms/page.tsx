@@ -197,7 +197,7 @@ export default function ClassroomsPage() {
             <span className="grid size-9 place-items-center rounded-xl bg-blue-600 text-white shadow-sm shadow-blue-200">
               J
             </span>
-            Jretta
+            Cloneretta
           </Link>
           <div className="flex items-center gap-2">
             <Link
@@ -443,7 +443,7 @@ export default function ClassroomsPage() {
                     ))}
                     {students.length === 0 && pendingMemberships.every((membership) => membership.role !== "student") && (
                       <p className="px-4 py-8 text-center text-sm leading-6 text-slate-600">
-                        No students are enrolled yet. Add one using their Jretta account email.
+                        No students are enrolled yet. Add one using their Cloneretta account email.
                       </p>
                     )}
                   </div>

@@ -52,7 +52,7 @@ export default function LockedDashboard({ role, email }: { role: "teacher" | "st
   return <main className="min-h-screen bg-white text-slate-900">
     <nav className="border-b border-slate-200">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-        <Link href="/" className="flex items-center gap-3 font-bold"><span className="grid size-9 place-items-center rounded-xl bg-blue-600 text-white">J</span>Jretta</Link>
+        <Link href="/" className="flex items-center gap-3 font-bold"><span className="grid size-9 place-items-center rounded-xl bg-blue-600 text-white">J</span>Cloneretta</Link>
         <span className="rounded-lg bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700">{teacher ? "Teacher Dashboard" : "Student Dashboard"}</span>
       </div>
     </nav>

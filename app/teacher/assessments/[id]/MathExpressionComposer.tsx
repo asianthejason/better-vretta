@@ -35,7 +35,7 @@ function NodeView({ node, selectedId, onSelect }: { node: MathExpressionNode; se
   const child = (value: MathExpressionNode) => <NodeView node={value} selectedId={selectedId} onSelect={onSelect} />;
   switch (node.type) {
     case "slot": return shell(<span className="rounded border border-dashed border-blue-400 bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700">{node.label || "Add"}</span>);
-    case "text": return shell(<span className="whitespace-pre-wrap font-serif text-xl">{node.value || "□"}</span>);
+    case "text": return shell(node.value ? <span className="text-xl" dangerouslySetInnerHTML={{ __html: buildMathExpressionHtml(node) }} /> : <span className="font-serif text-xl">□</span>);
     case "sequence": return shell(<span className="inline-flex items-center gap-0.5">{node.children.map((item) => <NodeView key={item.id} node={item} selectedId={selectedId} onSelect={onSelect} />)}</span>);
     case "fraction": return shell(<>{node.whole && child(node.whole)}<span className="inline-flex min-w-12 flex-col items-stretch text-center"><span className="border-b border-slate-950 px-1">{child(node.numerator)}</span><span className="px-1">{child(node.denominator)}</span></span></>);
     case "root": {
@@ -161,6 +161,7 @@ export default function MathExpressionComposer({ value, onChange, onCommit, onCa
     <p className="mb-2 text-xs text-blue-900">Select a highlighted slot or any part of the expression, then add, wrap, or edit it. Every math structure can contain another structure.</p>
     <div className="mb-2 flex flex-wrap gap-1.5">
       {[['text', 'Text'], ['fraction', 'a⁄b'], ['root', '√'], ['superscript', 'x²'], ['subscript', 'x₂'], ['summation', '∑'], ['product', '∏'], ['integral', '∫'], ['limit', 'lim']].map(([kind, label]) => <button key={kind} type="button" className={button} onClick={() => addTemplate(kind)} title={`Put ${label} in the selected slot or wrap the selected expression`}>{label}</button>)}
+      <button type="button" className={button} onClick={() => addBasicSymbol("×")} title="Insert a multiplication sign (typing * also works)">× Multiply</button>
       <button type="button" className={showBasicSymbols ? "h-9 rounded-lg border border-blue-500 bg-blue-600 px-3 text-xs font-semibold text-white hover:border-blue-400 hover:bg-blue-500" : button} aria-expanded={showBasicSymbols} onClick={() => setShowBasicSymbols((current) => !current)} title="Basic math symbols">π Symbols</button>
       <select aria-label="Add brackets" defaultValue="" onChange={(event) => { if (event.target.value) wrapBrackets(event.target.value as MathBracketStyle); event.currentTarget.value = ""; }} className="h-9 rounded-lg border border-slate-300 bg-white px-2 text-xs font-semibold text-slate-800">
         <option value="" disabled>Brackets</option><option value="parentheses">( ) Parentheses</option><option value="brackets">[ ] Square</option><option value="braces">{'{ }'} Braces</option>
@@ -174,7 +175,7 @@ export default function MathExpressionComposer({ value, onChange, onCommit, onCa
     </div>
     <div className="flex flex-wrap items-end gap-2 rounded-lg border border-slate-200 bg-white p-2">
       <label className="min-w-48 flex-1 text-xs font-semibold text-slate-600">Selected content: {nodeLabel(selected)}
-        <input ref={textInputRef} value={textValue} disabled={selected.type !== "slot" && selected.type !== "text"} placeholder={selected.type === "slot" ? selected.label || "Enter text" : "Select a text value or empty slot"} onChange={(event) => { replaceSelected({ type: "text", id: selected.id, value: event.target.value }); }} className="mt-1 block h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950 disabled:bg-slate-100" />
+        <input ref={textInputRef} value={textValue} disabled={selected.type !== "slot" && selected.type !== "text"} placeholder={selected.type === "slot" ? selected.label || "Enter text" : "Select a text value or empty slot"} onChange={(event) => { replaceSelected({ type: "text", id: selected.id, value: event.target.value.replaceAll("*", "×") }); }} className="mt-1 block h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-950 disabled:bg-slate-100" />
       </label>
       {selectedFraction && <label className="flex h-9 items-center gap-2 text-xs font-semibold text-slate-700"><input type="checkbox" checked={Boolean(selectedFraction.whole)} onChange={(event) => {
         if (event.target.checked) {

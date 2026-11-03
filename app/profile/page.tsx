@@ -98,7 +98,7 @@ export default function ProfilePage() {
             <span className="grid size-9 place-items-center rounded-xl bg-blue-600 text-white shadow-sm shadow-blue-200">
               J
             </span>
-            Jretta
+            Cloneretta
           </Link>
           <div className="flex items-center gap-2">
             {profile?.role === "teacher" && (
@@ -152,7 +152,7 @@ export default function ProfilePage() {
       <div className="mx-auto max-w-2xl px-6 py-10 sm:py-14">
         <p className="text-sm font-bold uppercase tracking-widest text-blue-600">Account settings</p>
         <h1 className="mt-2 text-3xl font-black tracking-tight sm:text-4xl">Your profile</h1>
-        <p className="mt-3 text-slate-600">Update the name other people see in Jretta.</p>
+        <p className="mt-3 text-slate-600">Update the name other people see in Cloneretta.</p>
 
         {!profile ? (
           <div className="mt-8 rounded-2xl border border-slate-200 p-8 text-sm text-slate-600">Loading profile…</div>

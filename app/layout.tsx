@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Jretta",
+  title: "Cloneretta",
   description: "Create and deliver modern interactive assessments.",
 };
 

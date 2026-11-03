@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { hydratePrivateImageUrls } from "@/lib/privateImageUrls";
-import { supabase } from "@/lib/supabaseClient";
+import { getCachedAccessToken, supabase } from "@/lib/supabaseClient";
 import { decodeDraft, encodeDraft, mergeQuestionDrafts, readLocalDrafts, writeLocalDraft, type QuestionDraft } from "@/lib/questionDrafts";
 
 export function useQuestionDrafts<T extends Record<string, unknown>>({ ownerId, assessmentId, snapshot, enabled }: {
@@ -63,8 +63,17 @@ export function useQuestionDrafts<T extends Record<string, unknown>>({ ownerId, 
         return;
       }
       const encoded = { ...record, snapshot: await encodeDraft(record.snapshot) };
-      const { error } = await supabase.from("question_drafts").upsert(encoded);
-      if (error) throw new Error(error.message);
+      const token = getCachedAccessToken();
+      if (!token) throw new Error("Cloud session unavailable.");
+      const response = await fetch("/api/question-drafts", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify(encoded),
+      });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(result.error || "Cloud draft save is unavailable.");
+      }
       lastRemote.current.set(record.id, record.updated_at);
       if (pendingRemote.current.get(record.id)?.updated_at === record.updated_at) pendingRemote.current.delete(record.id);
       if (latest.current?.updated_at === record.updated_at) setMessage("Draft saved");
@@ -81,15 +90,27 @@ export function useQuestionDrafts<T extends Record<string, unknown>>({ ownerId, 
     void (async () => {
       const local = await readLocalDrafts(ownerId, assessmentId).catch(() => []);
       if (!cancelled) setRecords(current => mergeQuestionDrafts(current, local));
-      const { data } = await supabase.from("question_drafts").select("*").eq("assessment_id", assessmentId).eq("owner_id", ownerId);
-      const merged = mergeQuestionDrafts(local, (data || []) as QuestionDraft[]);
+      let remote: QuestionDraft[] = [];
+      try {
+        const token = getCachedAccessToken();
+        if (token) {
+          const response = await fetch(`/api/question-drafts?assessmentId=${encodeURIComponent(assessmentId)}`, { headers: { Authorization: `Bearer ${token}` } });
+          if (response.ok) {
+            const result = await response.json() as { drafts?: QuestionDraft[] };
+            remote = result.drafts || [];
+          }
+        }
+      } catch {
+        // Device-local drafts remain available while cloud sync is offline.
+      }
+      const merged = mergeQuestionDrafts(local, remote);
       if (cancelled) return;
       setRecords(current => mergeQuestionDrafts(current, merged));
       // Recover offline saves, including publication tombstones, without restoring editor state.
       for (const record of merged) {
         void writeLocalDraft(record).catch(() => {});
-        const remote = (data || []).find((row: QuestionDraft) => row.id === record.id);
-        if (!remote || Date.parse(remote.updated_at) < Date.parse(record.updated_at)) void sync(record as QuestionDraft<T>);
+        const remoteRecord = remote.find((row) => row.id === record.id);
+        if (!remoteRecord || Date.parse(remoteRecord.updated_at) < Date.parse(record.updated_at)) void sync(record as QuestionDraft<T>);
       }
     })();
     return () => { cancelled = true; };

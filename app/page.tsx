@@ -33,7 +33,7 @@ export default function Home() {
       <nav className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5 lg:px-8">
         <Link href="/" className="flex items-center gap-3 font-bold tracking-tight">
           <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 text-white shadow-lg shadow-blue-200">J</span>
-          Jretta
+          Cloneretta
         </Link>
         <div className="flex items-center gap-2">
           {accountRole ? (
@@ -72,9 +72,6 @@ export default function Home() {
           <h1 className="mt-7 text-5xl font-bold tracking-[-0.04em] text-slate-950 sm:text-6xl lg:text-7xl">
             Digital assessments<span className="block text-blue-600">made &ldquo;easy&rdquo;.</span>
           </h1>
-          <p className="mx-auto mt-7 max-w-2xl text-lg leading-8 text-slate-600 sm:text-xl">
-            Make tests. Assign tests. Take tests. Jretta handles the logistics. The knowing-the-answers part is still on you.
-          </p>
           <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
             <Link href="/login" className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-6 py-3.5 font-semibold text-white shadow-xl shadow-blue-200 transition hover:-translate-y-0.5 hover:bg-blue-700 sm:w-auto">
               Create an account <span aria-hidden="true">→</span>

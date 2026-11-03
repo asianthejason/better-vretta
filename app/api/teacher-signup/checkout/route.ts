@@ -53,7 +53,7 @@ export async function POST(request: Request) {
       subscription_data: { metadata: { purpose: "teacher_signup", user_id: user.id, plan: quote.plan } },
       line_items: [{ quantity: 1, price_data: {
         currency: quote.currency, unit_amount: quote.amount, recurring: { interval: "year" },
-        product_data: { name: `Jretta ${TEACHER_PLANS[quote.plan].name}`, description: quote.plan === "basic" ? "Annual teacher plan · 2 classrooms" : "Annual teacher plan · unlimited classrooms" },
+        product_data: { name: `Cloneretta ${TEACHER_PLANS[quote.plan].name}`, description: quote.plan === "basic" ? "Annual teacher plan · 2 classrooms" : "Annual teacher plan · unlimited classrooms" },
       } }],
       ui_mode: uiMode,
       ...(uiMode === "embedded_page" ? { redirect_on_completion: "never" as const } : {}),

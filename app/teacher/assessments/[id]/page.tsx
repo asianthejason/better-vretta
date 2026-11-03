@@ -14,7 +14,7 @@ import {
 } from "react";
 import Link from "next/link";
 import LocationCanvasElementContent from "@/app/components/LocationCanvasElementContent";
-import { supabase } from "@/lib/supabaseClient";
+import { getCachedAccessToken, supabase } from "@/lib/supabaseClient";
 import { requireAccountRole } from "@/lib/roleGuard";
 import RichTextEditor from "./RichTextEditor";
 import { useQuestionDrafts } from "./useQuestionDrafts";
@@ -43,6 +43,17 @@ type QuestionType =
   | "image-question"
   | "sorting-order"
   | "sorting-category";
+
+const TEMPLATE_QUESTION_TYPES: { type: QuestionType; label: string; description: string }[] = [
+  { type: "multiple-choice", label: "Multiple Choice", description: "A ready-to-customize answer choice layout." },
+  { type: "drag-and-drop", label: "Drag & Drop", description: "A starter canvas with draggable choices and targets." },
+  { type: "sort-into-groups", label: "Sort into Groups", description: "A starter layout for sorting choices into categories." },
+  { type: "dropdown", label: "Dropdown", description: "A starter canvas with an answer menu." },
+  { type: "fill-in-the-blank", label: "Fill in the Blank", description: "A starter layout for typed student answers." },
+];
+const BUILT_IN_TEMPLATE_ASSESSMENT_ID = "9172cd6c-e319-40a3-821e-84a6c365508b";
+const BUILT_IN_TEMPLATE_QUESTION_ORDERS = [1, 2, 3, 4, 5, 7, 8, 11, 12, 13, 16, 18, 19, 21, 22];
+const CUSTOM_TEMPLATE_PREFIX = "__question_template__:";
 
 type OverlayAnswerMode = "text-entry" | "drag-drop-text" | "drag-drop-image";
 type SplitEditorTab = "left" | "right";
@@ -181,6 +192,26 @@ type Question = {
   };
   question_order: number;
 };
+
+type QuestionTemplate = {
+  id: string;
+  name: string;
+  kind: "built-in" | "custom";
+  question: Question;
+};
+
+function asSingleViewQuestion(question: Question): Question {
+  const questionData = structuredClone(question.question_data);
+  questionData.layout = "standard";
+  delete questionData.leftCanvas;
+  delete questionData.leftPanelTitle;
+  delete questionData.leftPanelTopContent;
+  delete questionData.leftPanelContent;
+  delete questionData.leftPanelImageUrl;
+  delete questionData.leftPanelImagePath;
+  delete questionData.leftPanelTable;
+  return { ...structuredClone(question), question_data: questionData };
+}
 
 type DragMode = "move" | "resize" | null;
 
@@ -600,6 +631,8 @@ export default function AssessmentEditorPage({
   const [savingFormulaSheet, setSavingFormulaSheet] = useState(false);
   const [formulaSheetError, setFormulaSheetError] = useState("");
   const [questions, setQuestions] = useState<Question[]>([]);
+  const [builtInTemplates, setBuiltInTemplates] = useState<QuestionTemplate[]>([]);
+  const [customTemplates, setCustomTemplates] = useState<QuestionTemplate[]>([]);
   const [titleDraft, setTitleDraft] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
   const [savingTitle, setSavingTitle] = useState(false);
@@ -722,11 +755,20 @@ export default function AssessmentEditorPage({
 
   const [loading, setLoading] = useState(true);
   const [uploadingImage, setUploadingImage] = useState(false);
+  const [questionLauncherOpen, setQuestionLauncherOpen] = useState(false);
+  const [questionLauncherView, setQuestionLauncherView] = useState<"choice" | "templates" | "preview" | "layout">("choice");
+  const [templateQuestionType, setTemplateQuestionType] = useState<QuestionType | "custom">("multiple-choice");
+  const [pendingTemplate, setPendingTemplate] = useState<QuestionTemplate | null>(null);
+  const [confirmingTemplateDelete, setConfirmingTemplateDelete] = useState(false);
+  const [deletingTemplate, setDeletingTemplate] = useState(false);
   const [questionModalOpen, setQuestionModalOpen] = useState(false);
   const [expandedQuestionIds, setExpandedQuestionIds] = useState<string[]>([]);
   const [draggedQuestionId, setDraggedQuestionId] = useState<string | null>(null);
   const [dragOverQuestionId, setDragOverQuestionId] = useState<string | null>(null);
   const [reorderingQuestions, setReorderingQuestions] = useState(false);
+  const [savingTemplateQuestionId, setSavingTemplateQuestionId] = useState<string | null>(null);
+  const [templateSaveTarget, setTemplateSaveTarget] = useState<{ question: Question; questionNumber: number } | null>(null);
+  const [templateNameDraft, setTemplateNameDraft] = useState("");
 
   // Only editor input changes create snapshots; save status/list updates cannot reset the form.
   const editorSnapshot = useMemo(() => ({
@@ -986,8 +1028,9 @@ export default function AssessmentEditorPage({
     >();
 
     function addImage(url: string | undefined, path: string | undefined, label: string, id?: string) {
-      if (url && !images.has(url)) {
-        images.set(url, { id, url, path: path || "", label });
+      const key = path || url;
+      if (url && key && !images.has(key)) {
+        images.set(key, { id, url, path: path || "", label });
       }
     }
 
@@ -1172,6 +1215,17 @@ export default function AssessmentEditorPage({
       return;
     }
 
+    const { data: templateQuestionData, error: templateQuestionError } = await supabase
+      .from("questions")
+      .select("*")
+      .eq("assessment_id", BUILT_IN_TEMPLATE_ASSESSMENT_ID)
+      .in("question_order", BUILT_IN_TEMPLATE_QUESTION_ORDERS)
+      .order("question_order", { ascending: true });
+
+    if (templateQuestionError) {
+      console.error("Could not load built-in question templates:", templateQuestionError.message);
+    }
+
     const { data: referenceData, error: referenceError } = await supabase
       .from("reference_builds")
       .select("*")
@@ -1182,9 +1236,9 @@ export default function AssessmentEditorPage({
     }
 
     try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      if (sessionData.session?.access_token) {
-        const response = await fetch("/api/account-images/recover", { method: "POST", headers: { Authorization: `Bearer ${sessionData.session.access_token}` } });
+      const token = getCachedAccessToken();
+      if (token) {
+        const response = await fetch("/api/account-images/recover", { method: "POST", headers: { Authorization: `Bearer ${token}` } });
         if (!response.ok) console.error("Could not recover past image uploads.");
       }
     } catch (error) { console.error("Could not recover past image uploads:", error); }
@@ -1197,11 +1251,27 @@ export default function AssessmentEditorPage({
       if (!data || data.length < 500) break;
     }
 
+    const customTemplateRecords = (referenceData || []).filter((reference) => reference.name.startsWith(CUSTOM_TEMPLATE_PREFIX));
+    const regularReferences = (referenceData || []).filter((reference) => !reference.name.startsWith(CUSTOM_TEMPLATE_PREFIX));
+    const storedCustomTemplates = customTemplateRecords.flatMap((reference) => {
+      const stored = reference.table_data as unknown as { question?: Question };
+      if (!stored?.question?.question_type || !stored.question.question_data) return [];
+      return [{ id: reference.id, name: reference.name.slice(CUSTOM_TEMPLATE_PREFIX.length), kind: "custom" as const, question: asSingleViewQuestion(stored.question) }];
+    });
+    const sourceTemplates = ((templateQuestionData || []) as Question[]).map((question) => ({
+      id: `built-in-${question.id}`,
+      name: `Question ${question.question_order}`,
+      kind: "built-in" as const,
+      question: asSingleViewQuestion(question),
+    }));
+
     let hydrated = {
       assessment: assessmentData as Assessment,
       questions: (questionData || []) as Question[],
-      references: (referenceData || []) as ReferenceBuild[],
+      references: regularReferences as ReferenceBuild[],
       images: (imageData || []) as AccountImage[],
+      builtInTemplates: sourceTemplates,
+      customTemplates: storedCustomTemplates,
     };
     try {
       hydrated = await hydratePrivateImageUrls(supabase, hydrated);
@@ -1214,6 +1284,8 @@ export default function AssessmentEditorPage({
     setQuestions(hydrated.questions);
     setReferenceBuilds(hydrated.references);
     setAccountImages(hydrated.images);
+    setBuiltInTemplates(hydrated.builtInTemplates);
+    setCustomTemplates(hydrated.customTemplates);
     setLoading(false);
   }
 
@@ -1447,6 +1519,52 @@ export default function AssessmentEditorPage({
 
     setEditingQuestionId(null);
     setQuestionModalOpen(false);
+  }
+
+  function startNewQuestion() {
+    resetQuestionForm();
+    questionDrafts.begin();
+    setQuestionLauncherOpen(false);
+    setQuestionModalOpen(true);
+  }
+
+  function chooseQuestionTemplate(template: QuestionTemplate) {
+    setPendingTemplate(template);
+    setConfirmingTemplateDelete(false);
+    setQuestionLauncherView("preview");
+  }
+
+  async function deleteCustomTemplate() {
+    if (!pendingTemplate || pendingTemplate.kind !== "custom" || deletingTemplate) return;
+    setDeletingTemplate(true);
+    try {
+      const token = getCachedAccessToken();
+      if (!token) throw new Error("Please sign in again.");
+      const response = await fetch("/api/question-templates", {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ id: pendingTemplate.id }),
+      });
+      const result = await response.json() as { deleted?: boolean; error?: string };
+      if (!response.ok || !result.deleted) throw new Error(result.error || "Could not delete this template.");
+      setCustomTemplates((current) => current.filter((template) => template.id !== pendingTemplate.id));
+      setPendingTemplate(null);
+      setConfirmingTemplateDelete(false);
+      setQuestionLauncherView("templates");
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Could not delete this template.");
+    } finally {
+      setDeletingTemplate(false);
+    }
+  }
+
+  function startQuestionFromTemplate(layout: QuestionLayout) {
+    if (!pendingTemplate) return;
+    const templateQuestion = asSingleViewQuestion(pendingTemplate.question);
+    resetQuestionForm();
+    setQuestionLauncherOpen(false);
+    setPendingTemplate(null);
+    startEditingQuestion(templateQuestion, layout);
   }
 
   function getChoicesFromForm() {
@@ -2916,10 +3034,12 @@ export default function AssessmentEditorPage({
     }
   }
 
-  function startEditingQuestion(question: Question) {
-    const draft = questionDrafts.records.find(record => record.question_id === question.id);
-    if (draft) { void resumeQuestionDraft(draft); return; }
-    questionDrafts.begin(question.id);
+  function startEditingQuestion(question: Question, templateLayout?: QuestionLayout) {
+    if (!templateLayout) {
+      const draft = questionDrafts.records.find(record => record.question_id === question.id);
+      if (draft) { void resumeQuestionDraft(draft); return; }
+    }
+    questionDrafts.begin(templateLayout ? undefined : question.id);
 
     setQuestionModalOpen(true);
     setQuestionBuilderStep(4);
@@ -2932,7 +3052,7 @@ export default function AssessmentEditorPage({
     setSelectedChoiceTableCellFiles({});
     setChoiceTableCellPreviewUrls({});
     setChoiceTableUploadedPickerCell(null);
-    setEditingQuestionId(question.id);
+    setEditingQuestionId(templateLayout ? null : question.id);
     setQuestionType(question.question_type);
     const savedDragDropData = normalizeDragDropData(question.question_data.dragDrop);
     setDropdownData(normalizeDropdownData(question.question_data.dropdown));
@@ -2941,7 +3061,7 @@ export default function AssessmentEditorPage({
     setDragDropData((question.question_type === "drag-and-drop" || question.question_type === "sort-into-groups")
       ? asLocationDragDropData(savedDragDropData, savedCanvas)
       : savedDragDropData);
-    setLeftQuestionCanvas(normalizeQuestionCanvas(question.question_data.leftCanvas));
+    setLeftQuestionCanvas(templateLayout ? createDefaultQuestionCanvas() : normalizeQuestionCanvas(question.question_data.leftCanvas));
     const savedSelectionMode = question.question_type === "multiple-choice" ? getMultipleChoiceSelectionMode(question.question_data) : null;
     const hasCanvasText = savedCanvas.elements.some((element) => element.type === "text");
     const legacyPromptBounds = savedCanvas.legacyPrompt || { x: 6, y: 7, width: 88, height: 19 };
@@ -2966,17 +3086,17 @@ export default function AssessmentEditorPage({
     selectedDragDropItemFilesRef.current = {};
     setSelectedDragDropItemFiles({});
     setDragDropItemPreviewUrls(Object.fromEntries(savedDragDropData.items.filter((item) => item.imageUrl).map((item) => [item.id, item.imageUrl || ""])));
-    setQuestionLayout(question.question_data.layout || "standard");
+    setQuestionLayout(templateLayout || question.question_data.layout || "standard");
     setLayoutSelectionMade(true);
     setSplitEditorTab("right");
     setSelectedReferenceQuestionId("");
-    setLeftPanelTitle(question.question_data.leftPanelTitle || "");
-    setLeftPanelTopContent(question.question_data.leftPanelTopContent || "");
-    setLeftPanelContent(question.question_data.leftPanelContent || "");
+    setLeftPanelTitle(templateLayout ? "" : question.question_data.leftPanelTitle || "");
+    setLeftPanelTopContent(templateLayout ? "" : question.question_data.leftPanelTopContent || "");
+    setLeftPanelContent(templateLayout ? "" : question.question_data.leftPanelContent || "");
     setSelectedLeftPanelImageFile(null);
-    setExistingLeftPanelImageUrl(question.question_data.leftPanelImageUrl || "");
-    setExistingLeftPanelImagePath(question.question_data.leftPanelImagePath || "");
-    setLeftPanelImagePreviewUrl(question.question_data.leftPanelImageUrl || "");
+    setExistingLeftPanelImageUrl(templateLayout ? "" : question.question_data.leftPanelImageUrl || "");
+    setExistingLeftPanelImagePath(templateLayout ? "" : question.question_data.leftPanelImagePath || "");
+    setLeftPanelImagePreviewUrl(templateLayout ? "" : question.question_data.leftPanelImageUrl || "");
     setMultipleChoiceImages(Array.from({ length: Math.max(2, question.question_data.choices?.length || 4) }, (_, index) =>
       question.question_data.choiceImages?.[index] || { imageUrl: "", imagePath: "" }
     ));
@@ -2990,14 +3110,12 @@ export default function AssessmentEditorPage({
         ])
       )
     );
-    setLeftPanelTableEnabled(
-      question.question_data.leftPanelTable?.enabled || false
-    );
+    setLeftPanelTableEnabled(templateLayout ? false : question.question_data.leftPanelTable?.enabled || false);
     setLeftPanelTableHasBorder(
-      question.question_data.leftPanelTable?.hasBorder ?? true
+      templateLayout ? true : question.question_data.leftPanelTable?.hasBorder ?? true
     );
     setLeftPanelTableCells(
-      question.question_data.leftPanelTable?.cells?.length
+      !templateLayout && question.question_data.leftPanelTable?.cells?.length
         ? question.question_data.leftPanelTable.cells
         : [["", ""], ["", ""]]
     );
@@ -3394,6 +3512,43 @@ export default function AssessmentEditorPage({
     loadAssessment(assessmentId);
   }
 
+  function openSaveTemplateDialog(question: Question, questionNumber: number) {
+    setTemplateSaveTarget({ question, questionNumber });
+    setTemplateNameDraft(`Question ${questionNumber} template`);
+  }
+
+  async function saveQuestionAsTemplate() {
+    if (!draftOwnerId || savingTemplateQuestionId || !templateSaveTarget) return;
+    const { question } = templateSaveTarget;
+    const enteredName = templateNameDraft.trim();
+    if (!enteredName) return;
+
+    const templateQuestion = asSingleViewQuestion(question);
+    setSavingTemplateQuestionId(question.id);
+    try {
+      const token = getCachedAccessToken();
+      if (!token) throw new Error("Please sign in again.");
+      const response = await fetch("/api/question-templates", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: enteredName, question: templateQuestion }),
+      });
+      const result = await response.json() as { id?: string; error?: string };
+      if (!response.ok || !result.id) throw new Error(result.error || "Could not save this template.");
+      const templateId = result.id;
+      setCustomTemplates((current) => [
+        ...current,
+        { id: templateId, name: enteredName, kind: "custom", question: templateQuestion },
+      ]);
+      setTemplateSaveTarget(null);
+      setTemplateNameDraft("");
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Could not save this template.");
+    } finally {
+      setSavingTemplateQuestionId(null);
+    }
+  }
+
   async function deleteQuestion(questionId: string) {
     const confirmDelete = window.confirm(
       "Are you sure you want to delete this question?"
@@ -3512,7 +3667,7 @@ export default function AssessmentEditorPage({
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <Link href="/" className="flex items-center gap-3 font-bold tracking-tight text-slate-950">
             <span className="grid size-9 place-items-center rounded-xl bg-blue-600 text-white shadow-sm shadow-blue-200">J</span>
-            Jretta
+            Cloneretta
           </Link>
           <div className="flex items-center gap-2">
             <Link href="/teacher" className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950">Teacher Dashboard</Link>
@@ -3613,8 +3768,10 @@ export default function AssessmentEditorPage({
                 type="button"
                 onClick={() => {
                   resetQuestionForm();
-                  questionDrafts.begin();
-                  setQuestionModalOpen(true);
+                  setQuestionLauncherView("choice");
+                  setTemplateQuestionType("multiple-choice");
+                  setPendingTemplate(null);
+                  setQuestionLauncherOpen(true);
                 }}
                 className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500"
               >
@@ -3706,6 +3863,194 @@ export default function AssessmentEditorPage({
                 {assessment.formula_sheet && <button type="button" disabled={savingFormulaSheet} onClick={() => void saveFormulaSheet(null)} className="rounded-xl border border-red-300 px-4 py-2 font-semibold text-red-700 disabled:opacity-50">Remove Formula Sheet</button>}
                 <button type="button" disabled={savingFormulaSheet} onClick={() => void saveFormulaSheet(formulaSheetDraft)} className="rounded-xl bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-500 disabled:opacity-50">{savingFormulaSheet ? "Saving…" : "Save Formula Sheet"}</button>
               </div>
+            </section>
+          </div>
+        )}
+
+        {templateSaveTarget && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void saveQuestionAsTemplate();
+              }}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="save-template-title"
+              className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 text-slate-950 shadow-2xl"
+            >
+              <h2 id="save-template-title" className="text-2xl font-semibold">Save as template</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">Only the right-side question view will be saved to Custom Templates.</p>
+              <label className="mt-5 block text-sm font-semibold text-slate-800">
+                Template name
+                <input
+                  autoFocus
+                  value={templateNameDraft}
+                  maxLength={120}
+                  onChange={(event) => setTemplateNameDraft(event.target.value)}
+                  className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3 font-normal text-slate-950 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                />
+              </label>
+              <div className="mt-6 flex justify-end gap-3">
+                <button
+                  type="button"
+                  disabled={Boolean(savingTemplateQuestionId)}
+                  onClick={() => { setTemplateSaveTarget(null); setTemplateNameDraft(""); }}
+                  className="rounded-xl border border-slate-300 px-4 py-2.5 font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={!templateNameDraft.trim() || Boolean(savingTemplateQuestionId)}
+                  className="rounded-xl bg-blue-600 px-5 py-2.5 font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {savingTemplateQuestionId ? "Saving…" : "Save template"}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {questionLauncherOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-sm sm:p-8">
+            <section role="dialog" aria-modal="true" aria-labelledby="question-launcher-title" className="relative w-full max-w-5xl rounded-3xl border border-slate-200 bg-white p-6 text-slate-950 shadow-2xl sm:p-8">
+              <button
+                type="button"
+                onClick={() => setQuestionLauncherOpen(false)}
+                aria-label="Close"
+                className="absolute right-5 top-5 flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-xl text-slate-500 shadow-sm hover:bg-slate-50 hover:text-slate-900"
+              >
+                ×
+              </button>
+
+              {questionLauncherView === "choice" ? (
+                <>
+                  <p className="text-xs font-bold uppercase tracking-[0.16em] text-blue-600">Add question</p>
+                  <h2 id="question-launcher-title" className="mt-2 text-2xl font-semibold">How would you like to start?</h2>
+                  <p className="mt-2 text-slate-600">Start with a template or build a question from scratch.</p>
+                  <div className="mt-7 grid gap-4 sm:grid-cols-2">
+                    <button
+                      type="button"
+                      aria-label="Use a template"
+                      onClick={() => setQuestionLauncherView("templates")}
+                      className="group rounded-2xl border-2 border-slate-200 p-6 text-left transition hover:border-blue-500 hover:bg-blue-50"
+                    >
+                      <span className="grid h-12 w-12 place-items-center rounded-xl bg-blue-100 text-2xl text-blue-700">▦</span>
+                      <span className="mt-5 block text-lg font-bold">Use a template</span>
+                      <span className="mt-1 block text-sm leading-6 text-slate-600">Choose a question type, preview available layouts, and use one as your starting point.</span>
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Create new"
+                      onClick={startNewQuestion}
+                      className="group rounded-2xl border-2 border-slate-200 p-6 text-left transition hover:border-blue-500 hover:bg-blue-50"
+                    >
+                      <span className="grid h-12 w-12 place-items-center rounded-xl bg-slate-100 text-2xl text-slate-700">＋</span>
+                      <span className="mt-5 block text-lg font-bold">Create new</span>
+                      <span className="mt-1 block text-sm leading-6 text-slate-600">Open the question builder and create a question from a blank canvas.</span>
+                    </button>
+                  </div>
+                </>
+              ) : questionLauncherView === "templates" ? (
+                <>
+                  <button type="button" onClick={() => setQuestionLauncherView("choice")} className="text-sm font-semibold text-blue-700 hover:text-blue-900">← Back</button>
+                  <h2 id="question-launcher-title" className="sr-only">Choose a question template</h2>
+                  <div role="tablist" aria-label="Template question types" className="mt-4 flex gap-1 overflow-x-auto border-b border-slate-200">
+                    {TEMPLATE_QUESTION_TYPES.map((item) => (
+                      <button
+                        key={item.type}
+                        type="button"
+                        role="tab"
+                        aria-selected={templateQuestionType === item.type}
+                        onClick={() => setTemplateQuestionType(item.type)}
+                        className={`shrink-0 border-b-2 px-4 py-3 text-sm font-semibold transition ${templateQuestionType === item.type ? "border-blue-600 text-blue-700" : "border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-800"}`}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={templateQuestionType === "custom"}
+                      onClick={() => setTemplateQuestionType("custom")}
+                      className={`shrink-0 border-b-2 px-4 py-3 text-sm font-semibold transition ${templateQuestionType === "custom" ? "border-blue-600 text-blue-700" : "border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-800"}`}
+                    >
+                      Custom Templates
+                    </button>
+                  </div>
+
+                  <div role="tabpanel" className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                    {(templateQuestionType === "custom" ? customTemplates : builtInTemplates.filter((template) => template.question.question_type === templateQuestionType)).map((template) => (
+                      <button
+                        key={template.id}
+                        type="button"
+                        aria-label={`Use template ${template.name}`}
+                        onClick={() => chooseQuestionTemplate(template)}
+                        className="group aspect-[16/10] overflow-hidden rounded-2xl border border-slate-200 bg-slate-100 p-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-blue-400 hover:shadow-md"
+                      >
+                        <span className="pointer-events-none block h-full overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                          <SavedQuestionStudentPreview question={template.question} index={template.question.question_order - 1} embedded />
+                        </span>
+                      </button>
+                    ))}
+                    {(templateQuestionType === "custom" ? customTemplates : builtInTemplates.filter((template) => template.question.question_type === templateQuestionType)).length === 0 && (
+                      <p className="col-span-full rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-6 py-10 text-center text-sm text-slate-500">
+                        {templateQuestionType === "custom" ? "No custom templates yet. Save an existing question as a template to add one here." : "No templates are available for this question type yet."}
+                      </p>
+                    )}
+                  </div>
+                </>
+              ) : questionLauncherView === "preview" ? (
+                <>
+                  <button type="button" onClick={() => { setConfirmingTemplateDelete(false); setQuestionLauncherView("templates"); }} className="text-sm font-semibold text-blue-700 hover:text-blue-900">← Back</button>
+                  <h2 id="question-launcher-title" className="sr-only">Template preview</h2>
+                  {pendingTemplate && (
+                    <div className="mt-4">
+                      <div className="max-h-[65vh] overflow-auto rounded-2xl border border-slate-200 bg-white shadow-inner">
+                        <SavedQuestionStudentPreview question={pendingTemplate.question} index={pendingTemplate.question.question_order - 1} embedded />
+                      </div>
+                      <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          {pendingTemplate.kind === "custom" && !confirmingTemplateDelete && (
+                            <button type="button" onClick={() => setConfirmingTemplateDelete(true)} className="rounded-xl border border-red-300 px-4 py-2.5 font-semibold text-red-700 hover:bg-red-50">
+                              Delete template
+                            </button>
+                          )}
+                          {pendingTemplate.kind === "custom" && confirmingTemplateDelete && (
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-sm font-semibold text-red-700">Delete permanently?</span>
+                              <button type="button" disabled={deletingTemplate} onClick={() => setConfirmingTemplateDelete(false)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 disabled:opacity-50">Cancel</button>
+                              <button type="button" disabled={deletingTemplate} onClick={() => void deleteCustomTemplate()} className="rounded-lg bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-500 disabled:opacity-50">{deletingTemplate ? "Deleting…" : "Yes, delete"}</button>
+                            </div>
+                          )}
+                        </div>
+                        <button type="button" onClick={() => setQuestionLauncherView("layout")} className="rounded-xl bg-blue-600 px-6 py-3 font-semibold text-white shadow-sm hover:bg-blue-500">
+                          Use template
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <button type="button" onClick={() => setQuestionLauncherView("templates")} className="text-sm font-semibold text-blue-700 hover:text-blue-900">← Back</button>
+                  <h2 id="question-launcher-title" className="mt-6 text-2xl font-semibold">How should this template be displayed?</h2>
+                  <p className="mt-2 text-slate-600">The saved template contains the right-side question view. Choose whether to use it alone or add a blank left-side canvas.</p>
+                  <div className="mt-7 grid gap-4 sm:grid-cols-2">
+                    <button type="button" onClick={() => startQuestionFromTemplate("standard")} className="rounded-2xl border-2 border-slate-200 p-6 text-left transition hover:border-blue-500 hover:bg-blue-50">
+                      <span className="block aspect-[16/9] rounded-xl border-2 border-blue-300 bg-blue-50" />
+                      <span className="mt-4 block text-lg font-bold">Single view</span>
+                      <span className="mt-1 block text-sm text-slate-600">Use the template as one full-width question canvas.</span>
+                    </button>
+                    <button type="button" onClick={() => startQuestionFromTemplate("split")} className="rounded-2xl border-2 border-slate-200 p-6 text-left transition hover:border-blue-500 hover:bg-blue-50">
+                      <span className="grid aspect-[16/9] grid-cols-2 overflow-hidden rounded-xl border-2 border-blue-300 bg-white"><span className="border-r-2 border-blue-300 bg-slate-50" /><span className="bg-blue-50" /></span>
+                      <span className="mt-4 block text-lg font-bold">Split view</span>
+                      <span className="mt-1 block text-sm text-slate-600">Place the template on the right with a blank canvas on the left.</span>
+                    </button>
+                  </div>
+                </>
+              )}
             </section>
           </div>
         )}
@@ -4880,6 +5225,27 @@ export default function AssessmentEditorPage({
             </p>
           ) : (
             <div className="mt-4 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-lg font-semibold text-white">Questions</h2>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedQuestionIds(questions.map((question) => question.id))}
+                    disabled={questions.every((question) => expandedQuestionIds.includes(question.id))}
+                    className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-300 transition hover:border-slate-600 hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Expand all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setExpandedQuestionIds([])}
+                    disabled={!questions.some((question) => expandedQuestionIds.includes(question.id))}
+                    className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-300 transition hover:border-slate-600 hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Collapse all
+                  </button>
+                </div>
+              </div>
               {reorderingQuestions && <p className="text-right text-xs font-semibold text-blue-400">Saving order…</p>}
               {questions.map((question, index) => (
                 <div
@@ -4952,6 +5318,18 @@ export default function AssessmentEditorPage({
                     </div>
                     <div className="flex gap-2">
                       <button
+                        type="button"
+                        disabled={savingTemplateQuestionId === question.id}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openSaveTemplateDialog(question, index + 1);
+                        }}
+                        className="rounded-lg border border-blue-300 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {savingTemplateQuestionId === question.id ? "Saving…" : "Save as template"}
+                      </button>
+                      <button
+                        type="button"
                         onClick={(event) => {
                           event.stopPropagation();
                           duplicateQuestion(question);

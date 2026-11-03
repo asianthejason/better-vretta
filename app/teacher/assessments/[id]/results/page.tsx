@@ -996,7 +996,7 @@ export default function ResultsPage({
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <Link href="/" className="flex items-center gap-3 font-bold tracking-tight text-slate-950">
             <span className="grid size-9 place-items-center rounded-xl bg-blue-600 text-white shadow-sm shadow-blue-200">J</span>
-            Jretta
+            Cloneretta
           </Link>
           <div className="flex items-center gap-2">
             <Link href="/teacher" className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950">Teacher Dashboard</Link>

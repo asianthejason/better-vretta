@@ -31,6 +31,24 @@ test("a complete sequence can be answered incorrectly with a distractor", () => 
   assert.equal(gradeDragDrop(sequence, { order: ["small", "medium", "large"] }).isCorrect, true);
 });
 
+test("a legacy sequence rendered as location targets uses the visible targets for completion", () => {
+  const legacyCanvas = asLocationDragDropData({
+    ...sequence,
+    zones: [
+      { id: "first", label: "", correctItemIds: ["small"], capacity: 1 },
+      { id: "second", label: "", correctItemIds: ["medium"], capacity: 1 },
+      { id: "third", label: "", correctItemIds: ["large"], capacity: 1 },
+    ],
+  });
+
+  assert.equal(legacyCanvas.preset, "locations");
+  assert.equal(isDragDropAnswered(legacyCanvas, {
+    first: ["small"],
+    second: ["medium"],
+    third: ["large"],
+  }), true);
+});
+
 test("legacy sequence questions use one target per saved choice", () => {
   const legacy = normalizeDragDropData({ ...sequence, sequenceTargetCount: undefined });
   assert.equal(getSequenceTargetCount(legacy), sequence.items.length);
@@ -48,6 +66,8 @@ test("location matching supports unused distractors and requires every target", 
 
   assert.equal(isDragDropAnswered(locations, { "left-point": ["small"] }), false);
   assert.equal(isDragDropAnswered(locations, { "left-point": ["small"], "right-point": ["large"] }), true);
+  assert.equal(isDragDropAnswered(locations, { "left-point": ["medium"], "right-point": ["small"] }), true);
+  assert.equal(gradeDragDrop(locations, { "left-point": ["medium"], "right-point": ["small"] }).isCorrect, false);
   assert.equal(gradeDragDrop(locations, { "left-point": ["small"], "right-point": ["large"] }).isCorrect, true);
 });
 

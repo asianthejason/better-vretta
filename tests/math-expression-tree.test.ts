@@ -31,7 +31,7 @@ test("math expressions support a fraction nested inside a square root", () => {
     },
   };
   const html = buildMathExpressionHtml(tree);
-  assert.match(html, /<msqrt><mfrac><mtext>p \+ q<\/mtext><mtext>2<\/mtext><\/mfrac><\/msqrt>/);
+  assert.match(html, /<msqrt><mfrac><mrow><mi mathvariant="italic">p<\/mi>.*<mo>\+<\/mo>.*<mi mathvariant="italic">q<\/mi><\/mrow><mrow><mn>2<\/mn><\/mrow><\/mfrac><\/msqrt>/);
   assert.match(html, /data-math-tree=/);
   assert.equal(mathExpressionHasEmptySlots(tree), false);
 });
@@ -113,14 +113,14 @@ test("an exponent wraps a completed bracketed fraction", () => {
   };
   const mathMl = renderMathExpressionMathMl(tree);
   assert.match(mathMl, /^<msup><mrow><mo fence="true" stretchy="true" symmetric="true" minsize="2em">\(<\/mo><mfrac>/);
-  assert.match(mathMl, /<\/mfrac><mo fence="true" stretchy="true" symmetric="true" minsize="2em">\)<\/mo><\/mrow><mtext>4<\/mtext><\/msup>$/);
+  assert.match(mathMl, /<\/mfrac><mo fence="true" stretchy="true" symmetric="true" minsize="2em">\)<\/mo><\/mrow><mrow><mn>4<\/mn><\/mrow><\/msup>$/);
 });
 
 test("any slot can be replaced with another structured expression", () => {
   const tree: MathExpressionNode = { type: "fraction", id: "outer", numerator: { type: "slot", id: "numerator" }, denominator: text("5") };
   const nestedRoot: MathExpressionNode = { type: "root", id: "nested-root", index: text("3"), radicand: text("x") };
   const updated = replaceMathNode(tree, "numerator", nestedRoot);
-  assert.match(renderMathExpressionMathMl(updated), /<mfrac><mroot><mtext>x<\/mtext><mtext>3<\/mtext><\/mroot><mtext>5<\/mtext><\/mfrac>/);
+  assert.match(renderMathExpressionMathMl(updated), /<mfrac><mroot><mrow><mi mathvariant="italic">x<\/mi><\/mrow><mrow><mn>3<\/mn><\/mrow><\/mroot><mrow><mn>5<\/mn><\/mrow><\/mfrac>/);
   assert.equal(mathExpressionHasEmptySlots(updated), false);
 });
 
@@ -132,7 +132,18 @@ test("stored expression trees round trip and reject invalid payloads", () => {
 });
 
 test("math text is escaped before it reaches MathML", () => {
-  assert.equal(renderMathExpressionMathMl(text("a < b & c")), "<mtext>a &lt; b &amp; c</mtext>");
+  const mathMl = renderMathExpressionMathMl(text("a < b & c"));
+  assert.match(mathMl, /<mi mathvariant="italic">a<\/mi>/);
+  assert.match(mathMl, /<mo>&lt;<\/mo>/);
+  assert.match(mathMl, /<mtext>&amp;<\/mtext>/);
+  assert.doesNotMatch(mathMl, /<[^>]+>[^<]*[<&][^a-z#/]/);
+});
+
+test("variables use italic identifiers and multiplication stays distinct", () => {
+  const mathMl = renderMathExpressionMathMl(text("2x × 4"));
+  assert.match(mathMl, /<mn>2<\/mn><mi mathvariant="italic">x<\/mi>/);
+  assert.match(mathMl, /<mo>×<\/mo>/);
+  assert.equal(renderMathExpressionMathMl(text("x")), '<mrow><mi mathvariant="italic">x</mi></mrow>');
 });
 
 test("mixed fractions retain an editable whole part when saved and reopened", () => {
@@ -142,7 +153,7 @@ test("mixed fractions retain an editable whole part when saved and reopened", ()
   assert.equal(mathExpressionHasEmptySlots(complete), false);
   assert.deepEqual(decodeMathExpressionTree(encodeMathExpressionTree(complete)), complete);
   assert.equal(findMathNode(complete, tree.whole!.id)?.type, "text");
-  assert.equal(renderMathExpressionMathMl(complete), '<mrow><mtext>3</mtext><mspace width="0.15em"/><mfrac><mtext>1</mtext><mtext>2</mtext></mfrac></mrow>');
+  assert.equal(renderMathExpressionMathMl(complete), '<mrow><mrow><mn>3</mn></mrow><mspace width="0.15em"/><mfrac><mrow><mn>1</mn></mrow><mrow><mn>2</mn></mrow></mfrac></mrow>');
   assert.equal(mathExpressionHasEmptySlots(removeMathNode(complete, tree.whole!.id).root), true);
 });
 

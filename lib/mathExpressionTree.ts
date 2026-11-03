@@ -118,11 +118,46 @@ const escapeMathText = (value: string) => value.replaceAll("&", "&amp;").replace
 const mtext = (value: string) => `<mtext>${escapeMathText(value)}</mtext>`;
 const fence = (value: string) => `<mo fence="true" stretchy="true" symmetric="true" minsize="2em">${value}</mo>`;
 
+/** Render free-form equation input with semantic MathML typography. */
+export function renderMathTextValue(value: string): string {
+  const characters = Array.from(value);
+  const output: string[] = [];
+  for (let index = 0; index < characters.length;) {
+    const character = characters[index];
+    if (/\s/u.test(character)) {
+      while (/\s/u.test(characters[index + 1] || "")) index += 1;
+      output.push('<mspace width="0.22em"/>');
+      index += 1;
+      continue;
+    }
+    if (/\d/u.test(character) || (character === "." && /\d/u.test(characters[index + 1] || ""))) {
+      let number = character;
+      index += 1;
+      while (index < characters.length && /[\d.]/u.test(characters[index])) number += characters[index++];
+      output.push(`<mn>${escapeMathText(number)}</mn>`);
+      continue;
+    }
+    if (/\p{L}/u.test(character)) {
+      output.push(`<mi mathvariant="italic">${escapeMathText(character)}</mi>`);
+      index += 1;
+      continue;
+    }
+    if (/[+\-−=×÷*/<>≤≥≠≈±→←∈∉⊥∥%]/u.test(character)) {
+      output.push(`<mo>${escapeMathText(character === "*" ? "×" : character)}</mo>`);
+      index += 1;
+      continue;
+    }
+    output.push(mtext(character));
+    index += 1;
+  }
+  return output.join("");
+}
+
 export function renderMathExpressionMathMl(node: MathExpressionNode): string {
   const render = renderMathExpressionMathMl;
   switch (node.type) {
     case "slot": return "<mtext>□</mtext>";
-    case "text": return mtext(node.value);
+    case "text": return `<mrow>${renderMathTextValue(node.value)}</mrow>`;
     case "sequence": return `<mrow>${node.children.map(render).join("")}</mrow>`;
     case "fraction": {
       const fraction = `<mfrac>${render(node.numerator)}${render(node.denominator)}</mfrac>`;

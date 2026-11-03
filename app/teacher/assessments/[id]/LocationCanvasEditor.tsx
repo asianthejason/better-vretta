@@ -17,7 +17,7 @@ import { expandCanvasUploadFiles } from "@/lib/pdfToImages";
 export type LocationLibraryImage = { id?: string; url: string; path: string; label: string };
 
 type Gesture = {
-  kind: "target-resize" | "target" | "choices" | "choice-item" | "choice-item-resize" | "overlay-move" | "overlay-resize" | "element-move" | "element-resize" | "table-column" | "table-row" | "shape-draw";
+  kind: "target-resize" | "target" | "choices" | "choice-item" | "choice-item-resize" | "overlay-move" | "overlay-resize" | "element-move" | "element-resize" | "element-marquee" | "table-column" | "table-row" | "shape-draw";
   zoneId?: string;
   itemId?: string;
   elementId?: string;
@@ -31,6 +31,9 @@ type Gesture = {
   trackIndex?: number;
   startTracks?: number[];
   resizeEdge?: "top" | "right" | "bottom" | "left" | "top-left" | "top-right" | "bottom-left" | "bottom-right";
+  groupElements?: Array<{ id: string; x: number; y: number; width: number; height: number }>;
+  groupItems?: Array<{ id: string; x: number; y: number; width: number; height: number }>;
+  groupChoiceBank?: CanvasRect;
 };
 
 type TableSelection = {
@@ -44,6 +47,7 @@ type TableSelection = {
 type EditingTableCell = { elementId: string; row: number; column: number };
 type SnapGuides = { x: number | null; y: number | null };
 type CanvasRect = { x: number; y: number; width: number; height: number };
+type CanvasHistorySnapshot = { data: DragDropData; overlayBounds: Array<{ id: string; bounds: CanvasRect }> };
 
 const ALGEBRA_TILE_COUNT_FIELDS: Array<{ key: keyof CanvasAlgebraTileCounts; label: string }> = [
   { key: "positiveUnit", label: "+1" }, { key: "positiveX", label: "+x" }, { key: "positiveX2", label: "+x²" },
@@ -77,7 +81,7 @@ const snapLine = (position: number, lines: number[], threshold: number) => {
   return best?.position ?? null;
 };
 
-export default function LocationCanvasEditor({ data, onChange, uploadedImages, itemPreviewUrls, onItemImageFileChange, onChooseItemImage, onRemoveItemImage, onUploadBackground, onDeleteUploadedImage, compositionOnly = false, choiceOnly = false, allowChoiceMarkers = true, choiceSelectionMode, isChoiceCorrect, choicePlaceholder = "Choice", choiceHtmlById = {}, onChoiceHtmlChange, onAddChoice, onRemoveChoice, renderChoiceEditorExtra, title = "Location canvas", description = "Drag and resize targets on a blank canvas, or add a diagram as the background.", overlayBlocks = [], onOverlayBoundsChange, onRemoveOverlay, toolbarActions }: {
+export default function LocationCanvasEditor({ data, onChange: emitChange, uploadedImages, itemPreviewUrls, onItemImageFileChange, onChooseItemImage, onRemoveItemImage, onUploadBackground, onDeleteUploadedImage, compositionOnly = false, choiceOnly = false, allowChoiceMarkers = true, choiceSelectionMode, isChoiceCorrect, choicePlaceholder = "Choice", choiceHtmlById = {}, onChoiceHtmlChange, onAddChoice, onRemoveChoice, renderChoiceEditorExtra, title = "Location canvas", description = "Drag and resize targets on a blank canvas, or add a diagram as the background.", overlayBlocks = [], onOverlayBoundsChange, onRemoveOverlay, toolbarActions }: {
   data: DragDropData;
   onChange: (value: DragDropData) => void;
   uploadedImages: LocationLibraryImage[];
@@ -107,6 +111,42 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
 }) {
   const canvasHeight = normalizeCanvasHeight(data.canvasHeight);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const undoStackRef = useRef<CanvasHistorySnapshot[]>([]);
+  const redoStackRef = useRef<CanvasHistorySnapshot[]>([]);
+  const historyGestureRef = useRef<CanvasHistorySnapshot | null>(null);
+  const [, setHistoryRevision] = useState(0);
+  const copyData = (value: DragDropData) => structuredClone(value);
+  const captureHistorySnapshot = (): CanvasHistorySnapshot => ({
+    data: copyData(data),
+    overlayBounds: overlayBlocks.map((overlay) => ({ id: overlay.id, bounds: structuredClone(overlay.bounds) })),
+  });
+  const applyHistorySnapshot = (snapshot: CanvasHistorySnapshot) => {
+    emitChange(copyData(snapshot.data));
+    snapshot.overlayBounds.forEach(({ id, bounds }) => onOverlayBoundsChange?.(id, structuredClone(bounds)));
+  };
+  const onChange = (value: DragDropData) => {
+    if (!historyGestureRef.current) {
+      undoStackRef.current.push(captureHistorySnapshot());
+      redoStackRef.current = [];
+      setHistoryRevision((current) => current + 1);
+    }
+    emitChange(value);
+  };
+  const beginHistoryGesture = () => { historyGestureRef.current ??= captureHistorySnapshot(); };
+  const undo = () => {
+    const previous = undoStackRef.current.pop();
+    if (!previous) return;
+    redoStackRef.current.push(captureHistorySnapshot());
+    applyHistorySnapshot(previous);
+    setHistoryRevision((current) => current + 1);
+  };
+  const redo = () => {
+    const next = redoStackRef.current.pop();
+    if (!next) return;
+    undoStackRef.current.push(captureHistorySnapshot());
+    applyHistorySnapshot(next);
+    setHistoryRevision((current) => current + 1);
+  };
   const resizeCanvasHeight = (requestedHeight: number | string) => {
     // Coordinates are percentages of height; convert them to preserve their
     // distance from the top when only the canvas extent changes.
@@ -120,7 +160,7 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
       canvasHeight: nextHeight,
       canvasElements: data.canvasElements?.map(element => ({ ...element, y: element.y * ratio, height: element.height * ratio })),
       choiceBankY: (data.choiceBankY ?? 6) * ratio,
-      items: data.items.map(item => ({ ...item, y: (item.y ?? 35) * ratio, ...((choicePresentation === "box" && !choicesAreGrouped) || (choiceOnly && choicePresentation === "content" && emptyChoice(item) && item.height !== undefined) ? { height: (item.height ?? 10.5) * ratio } : {}) })),
+      items: data.items.map(item => ({ ...item, y: (item.y ?? 35) * ratio, ...((choicePresentation === "box" && !choicesAreGrouped) || (choiceOnly && choicePresentation === "content" && item.height !== undefined) ? { height: (item.height ?? 10.5) * ratio } : {}) })),
       zones: data.zones.map(zone => ({ ...zone, y: (zone.y ?? 10) * ratio, ...(data.preset === "category-canvas" ? { height: (zone.height ?? 40) * ratio } : {}) })),
     });
     overlayBlocks.forEach(overlay => onOverlayBoundsChange?.(overlay.id, { ...overlay.bounds, y: overlay.bounds.y * ratio, height: overlay.bounds.height * ratio }));
@@ -135,6 +175,10 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
   const [editingElementId, setEditingElementId] = useState<string | null>(null);
   const [editingOverlayId, setEditingOverlayId] = useState<string | null>(null);
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
+  const [selectedElementIds, setSelectedElementIds] = useState<string[]>([]);
+  const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
+  const [choiceBankSelected, setChoiceBankSelected] = useState(false);
+  const [selectionMarquee, setSelectionMarquee] = useState<CanvasRect | null>(null);
   const [showChoiceImages, setShowChoiceImages] = useState(false);
   const [showShapeMenu, setShowShapeMenu] = useState(false);
   const [showAlgebraTileMenu, setShowAlgebraTileMenu] = useState(false);
@@ -193,7 +237,7 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
   const updateZone = (zoneId: string, patch: Partial<DragDropZone>) => updateZones(data.zones.map((zone) => zone.id === zoneId ? { ...zone, ...patch } : zone));
   const updateElements = (canvasElements: DragDropCanvasElement[]) => onChange({ ...data, canvasElements });
   const updateElement = (elementId: string, patch: Partial<DragDropCanvasElement>) => updateElements((data.canvasElements || []).map((element) => element.id === elementId ? { ...element, ...patch } : element));
-  const nudgeAsset = (event: KeyboardEvent<HTMLDivElement>) => {
+  const nudgeAsset = (event: KeyboardEvent<HTMLElement>) => {
     const directions: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
     const direction = directions[event.key];
     if ((!direction && event.key !== "Delete" && event.key !== "Backspace") || event.altKey || event.ctrlKey || event.metaKey || event.defaultPrevented ||
@@ -296,11 +340,15 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
     gestureMovedRef.current = false;
+    beginHistoryGesture();
     setEditingItemId(null);
     setEditingElementId(null);
     setEditingZoneId(null);
     setSnapGuides({ x: null, y: null });
-    setGesture({ kind: "choice-item", itemId: item.id, startX: event.clientX, startY: event.clientY, startLeft: item.x ?? 8, startTop: item.y ?? 35 });
+    const keepSelection = selectedItemIds.includes(item.id);
+    const itemIds = keepSelection ? selectedItemIds : [item.id];
+    if (!keepSelection) { setSelectedElementIds([]); setSelectedItemIds([item.id]); setChoiceBankSelected(false); }
+    setGesture({ kind: "choice-item", itemId: item.id, startX: event.clientX, startY: event.clientY, startLeft: item.x ?? 8, startTop: item.y ?? 35, groupElements: keepSelection ? (data.canvasElements || []).filter((element) => selectedElementIds.includes(element.id)).map(({ id, x, y, width, height }) => ({ id, x, y, width, height })) : [], groupItems: data.items.filter((entry) => itemIds.includes(entry.id)).map((entry) => ({ id: entry.id, x: entry.x ?? 8, y: entry.y ?? 35, ...itemPercentSize(entry) })) });
   };
   const beginChoiceItemResize = (event: PointerEvent<HTMLElement>, item: (typeof data.items)[number], resizeEdge: NonNullable<Gesture["resizeEdge"]>) => {
     event.preventDefault();
@@ -308,6 +356,7 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
     event.currentTarget.setPointerCapture(event.pointerId);
     const size = itemPercentSize(item);
     gestureMovedRef.current = true;
+    beginHistoryGesture();
     const canvasBounds = canvasRef.current?.getBoundingClientRect();
     const itemBounds = event.currentTarget.parentElement?.getBoundingClientRect();
     const startLeft = choicesAreGrouped && itemBounds && canvasBounds?.width ? (itemBounds.left - canvasBounds.left) / canvasBounds.width * 100 : item.x ?? 8;
@@ -357,6 +406,7 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
     gestureMovedRef.current = false;
+    beginHistoryGesture();
     setEditingItemId(null);
     setEditingElementId(null);
     setTableSelection(null);
@@ -368,6 +418,7 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
+    beginHistoryGesture();
     setEditingItemId(null);
     setEditingElementId(null);
     setEditingZoneId(null);
@@ -379,13 +430,16 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
     const renderedTop = canvasBounds && groupBounds
       ? ((groupBounds.top - canvasBounds.top) / canvasBounds.height) * 100
       : data.choiceBankY ?? 6;
-    setGesture({ kind: "choices", startX: event.clientX, startY: event.clientY, startLeft: data.choiceBankX ?? 8, startTop: renderedTop });
+    const keepSelection = choiceBankSelected;
+    if (!keepSelection) { setSelectedElementIds([]); setSelectedItemIds([]); setChoiceBankSelected(true); }
+    setGesture({ kind: "choices", startX: event.clientX, startY: event.clientY, startLeft: data.choiceBankX ?? 8, startTop: renderedTop, groupElements: keepSelection ? (data.canvasElements || []).filter((element) => selectedElementIds.includes(element.id)).map(({ id, x, y, width, height }) => ({ id, x, y, width, height })) : [], groupChoiceBank: getChoiceBankRect() });
   };
   const beginElementGesture = (event: PointerEvent<HTMLElement>, element: DragDropCanvasElement, kind: "element-move" | "element-resize", resizeEdge?: Gesture["resizeEdge"], preserveDefault = false) => {
     if (!preserveDefault) event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
     gestureMovedRef.current = false;
+    beginHistoryGesture();
     setEditingItemId(null);
     setEditingZoneId(null);
     setEditingTableCell(null);
@@ -394,25 +448,50 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
       setEditingElementId(null);
       setTableSelection(null);
     }
-    setGesture({ kind, elementId: element.id, startX: event.clientX, startY: event.clientY, startLeft: element.x, startTop: element.y, startWidth: element.width, startHeight: element.height, resizeEdge });
+    const groupIds = kind === "element-move" && selectedElementIds.includes(element.id) ? selectedElementIds : [element.id];
+    if (kind === "element-move" && !selectedElementIds.includes(element.id)) setSelectedElementIds([element.id]);
+    setGesture({ kind, elementId: element.id, startX: event.clientX, startY: event.clientY, startLeft: element.x, startTop: element.y, startWidth: element.width, startHeight: element.height, resizeEdge, groupElements: kind === "element-move" ? (data.canvasElements || []).filter((entry) => groupIds.includes(entry.id)).map(({ id, x, y, width, height }) => ({ id, x, y, width, height })) : undefined, groupItems: kind === "element-move" ? data.items.filter((entry) => selectedItemIds.includes(entry.id)).map((entry) => ({ id: entry.id, x: entry.x ?? 8, y: entry.y ?? 35, ...itemPercentSize(entry) })) : undefined, groupChoiceBank: kind === "element-move" && choiceBankSelected ? getChoiceBankRect() : undefined });
+  };
+  const beginMarqueeSelection = (event: PointerEvent<HTMLDivElement>) => {
+    if (drawingShapeKind || !canvasRef.current || (event.target instanceof Element && event.target.closest("[data-canvas-object]"))) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const bounds = canvasRef.current.getBoundingClientRect();
+    const x = clamp((event.clientX - bounds.left) / bounds.width * 100, 0, 100);
+    const y = clamp((event.clientY - bounds.top) / bounds.height * 100, 0, 100);
+    setSelectedElementIds([]);
+    setSelectedItemIds([]);
+    setChoiceBankSelected(false);
+    setSelectionMarquee({ x, y, width: 0, height: 0 });
+    setGesture({ kind: "element-marquee", startX: event.clientX, startY: event.clientY, startLeft: x, startTop: y });
   };
   const beginOverlayGesture = (event: PointerEvent<HTMLElement>, overlay: (typeof overlayBlocks)[number], kind: "overlay-move" | "overlay-resize", resizeEdge?: Gesture["resizeEdge"]) => {
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
     gestureMovedRef.current = false;
+    beginHistoryGesture();
     setEditingOverlayId(overlay.id);
     setEditingElementId(null);
     setEditingItemId(null);
     setEditingZoneId(null);
     setSnapGuides({ x: null, y: null });
-    setGesture({ kind, overlayId: overlay.id, startX: event.clientX, startY: event.clientY, startLeft: overlay.bounds.x, startTop: overlay.bounds.y, startWidth: overlay.bounds.width, startHeight: overlay.bounds.height, resizeEdge });
+    const canvasBounds = canvasRef.current?.getBoundingClientRect();
+    const renderedBounds = event.currentTarget.closest<HTMLElement>('[data-nudge-kind="overlay"]')?.getBoundingClientRect();
+    const renderedWidth = overlay.autoWidth && kind === "overlay-move" && canvasBounds?.width && renderedBounds
+      ? renderedBounds.width / canvasBounds.width * 100
+      : overlay.bounds.width;
+    const renderedHeight = kind === "overlay-move" && canvasBounds?.height && renderedBounds
+      ? renderedBounds.height / canvasBounds.height * 100
+      : overlay.bounds.height;
+    setGesture({ kind, overlayId: overlay.id, startX: event.clientX, startY: event.clientY, startLeft: overlay.bounds.x, startTop: overlay.bounds.y, startWidth: renderedWidth, startHeight: renderedHeight, resizeEdge });
   };
   const beginTableTrackGesture = (event: PointerEvent<HTMLElement>, element: DragDropCanvasElement, kind: "table-column" | "table-row", trackIndex: number) => {
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
     gestureMovedRef.current = false;
+    beginHistoryGesture();
     const count = kind === "table-column" ? element.columns || 2 : element.rows || 2;
     const tracks = getCanvasTrackSizes(count, kind === "table-column" ? element.columnWidths : element.rowHeights);
     setGesture({ kind, elementId: element.id, trackIndex, startTracks: tracks, startX: event.clientX, startY: event.clientY, startLeft: element.x, startTop: element.y, startWidth: element.width, startHeight: element.height });
@@ -421,6 +500,7 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
     if (!drawingShapeKind || !canvasRef.current || (event.target instanceof Element && event.target.closest("[data-canvas-object]"))) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
+    beginHistoryGesture();
     const bounds = canvasRef.current.getBoundingClientRect();
     const rawX = clamp(((event.clientX - bounds.left) / bounds.width) * 100, 0, 100);
     const rawY = clamp(((event.clientY - bounds.top) / bounds.height) * 100, 0, 100);
@@ -443,11 +523,34 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
   const moveGesture = (event: PointerEvent<HTMLDivElement>) => {
     if (!gesture || !canvasRef.current) return;
     const bounds = canvasRef.current.getBoundingClientRect();
-    const deltaX = ((event.clientX - gesture.startX) / bounds.width) * 100;
-    const deltaY = ((event.clientY - gesture.startY) / bounds.height) * 100;
+    const pixelDeltaX = event.clientX - gesture.startX;
+    const pixelDeltaY = event.clientY - gesture.startY;
+    let deltaX = (pixelDeltaX / bounds.width) * 100;
+    let deltaY = (pixelDeltaY / bounds.height) * 100;
+    const shiftLockable = gesture.kind === "element-move" || gesture.kind === "overlay-move" || gesture.kind === "choice-item" || gesture.kind === "choices" || gesture.kind === "target";
+    if (event.shiftKey && shiftLockable) {
+      if (Math.abs(pixelDeltaX) >= Math.abs(pixelDeltaY)) deltaY = 0;
+      else deltaX = 0;
+    }
     if (Math.abs(event.clientX - gesture.startX) > 3 || Math.abs(event.clientY - gesture.startY) > 3) {
       gestureMovedRef.current = true;
       if (gesture.kind === "target") setEditingZoneId(null);
+    }
+    if (gesture.kind === "element-marquee") {
+      const currentX = clamp(gesture.startLeft + deltaX, 0, 100);
+      const currentY = clamp(gesture.startTop + deltaY, 0, 100);
+      const marquee = { x: Math.min(gesture.startLeft, currentX), y: Math.min(gesture.startTop, currentY), width: Math.abs(currentX - gesture.startLeft), height: Math.abs(currentY - gesture.startTop) };
+      setSelectionMarquee(marquee);
+      setSelectedElementIds((data.canvasElements || []).filter((element) => element.x < marquee.x + marquee.width && element.x + element.width > marquee.x && element.y < marquee.y + marquee.height && element.y + element.height > marquee.y).map((element) => element.id));
+      if (choicesAreGrouped) {
+        const bank = getChoiceBankRect();
+        setChoiceBankSelected(bank.x < marquee.x + marquee.width && bank.x + bank.width > marquee.x && bank.y < marquee.y + marquee.height && bank.y + bank.height > marquee.y);
+        setSelectedItemIds([]);
+      } else {
+        setChoiceBankSelected(false);
+        setSelectedItemIds(data.items.filter((item) => { const size = itemPercentSize(item); const x = item.x ?? 8; const y = item.y ?? 35; return x < marquee.x + marquee.width && x + size.width > marquee.x && y < marquee.y + marquee.height && y + size.height > marquee.y; }).map((item) => item.id));
+      }
+      return;
     }
     if (gesture.kind === "shape-draw" && gesture.elementId) {
       const rawCurrentX = clamp(gesture.startLeft + deltaX, 0, 100);
@@ -529,6 +632,14 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
     }
     if (gesture.kind === "choices") {
       const bank = getChoiceBankRect();
+      if ((gesture.groupElements?.length || 0) > 0) {
+        const entries = [...(gesture.groupElements || []), ...(gesture.groupChoiceBank ? [{ id: "choice-bank", ...gesture.groupChoiceBank }] : [])];
+        const appliedX = clamp(deltaX, -Math.min(...entries.map((entry) => entry.x)), 100 - Math.max(...entries.map((entry) => entry.x + entry.width)));
+        const appliedY = clamp(deltaY, -Math.min(...entries.map((entry) => entry.y)), 100 - Math.max(...entries.map((entry) => entry.y + entry.height)));
+        const starts = new Map((gesture.groupElements || []).map((element) => [element.id, element]));
+        onChange({ ...data, canvasElements: (data.canvasElements || []).map((element) => { const start = starts.get(element.id); return start ? { ...element, x: start.x + appliedX, y: start.y + appliedY } : element; }), choiceBankX: (gesture.groupChoiceBank?.x ?? gesture.startLeft) + appliedX, choiceBankY: (gesture.groupChoiceBank?.y ?? gesture.startTop) + appliedY });
+        return;
+      }
       const minimumTop = (CHOICE_GROUP_TOOLBAR_CLEARANCE_PX / bounds.height) * 100;
       const maximumTop = Math.max(minimumTop, 100 - bank.height);
       const lines = getSnapLines(bounds, { choices: true });
@@ -545,6 +656,15 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
     if (gesture.kind === "choice-item" && gesture.itemId) {
       const currentItem = data.items.find((item) => item.id === gesture.itemId);
       if (!currentItem) return;
+      if ((gesture.groupItems?.length || 0) + (gesture.groupElements?.length || 0) > 1) {
+        const entries = [...(gesture.groupItems || []), ...(gesture.groupElements || [])];
+        const appliedX = clamp(deltaX, -Math.min(...entries.map((entry) => entry.x)), 100 - Math.max(...entries.map((entry) => entry.x + entry.width)));
+        const appliedY = clamp(deltaY, -Math.min(...entries.map((entry) => entry.y)), 100 - Math.max(...entries.map((entry) => entry.y + entry.height)));
+        const itemStarts = new Map((gesture.groupItems || []).map((entry) => [entry.id, entry]));
+        const elementStarts = new Map((gesture.groupElements || []).map((entry) => [entry.id, entry]));
+        onChange({ ...data, items: data.items.map((item) => { const start = itemStarts.get(item.id); return start ? { ...item, x: start.x + appliedX, y: start.y + appliedY } : item; }), canvasElements: (data.canvasElements || []).map((element) => { const start = elementStarts.get(element.id); return start ? { ...element, x: start.x + appliedX, y: start.y + appliedY } : element; }) });
+        return;
+      }
       const size = itemPercentSize(currentItem);
       const width = size.width;
       const height = size.height;
@@ -609,6 +729,20 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
     }
     if ((gesture.kind === "element-move" || gesture.kind === "element-resize") && gesture.elementId) {
       if (gesture.kind === "element-move") {
+        if ((gesture.groupElements?.length || 0) + (gesture.groupItems?.length || 0) + (gesture.groupChoiceBank ? 1 : 0) > 1) {
+          const group = [...(gesture.groupElements || []), ...(gesture.groupItems || []), ...(gesture.groupChoiceBank ? [{ id: "choice-bank", ...gesture.groupChoiceBank }] : [])];
+          const minX = Math.min(...group.map((element) => element.x));
+          const minY = Math.min(...group.map((element) => element.y));
+          const maxX = Math.max(...group.map((element) => element.x + element.width));
+          const maxY = Math.max(...group.map((element) => element.y + element.height));
+          const appliedX = clamp(deltaX, -minX, 100 - maxX);
+          const appliedY = clamp(deltaY, -minY, 100 - maxY);
+          const elementStarts = new Map((gesture.groupElements || []).map((entry) => [entry.id, entry]));
+          const itemStarts = new Map((gesture.groupItems || []).map((entry) => [entry.id, entry]));
+          onChange({ ...data, canvasElements: (data.canvasElements || []).map((element) => { const start = elementStarts.get(element.id); return start ? { ...element, x: start.x + appliedX, y: start.y + appliedY } : element; }), items: data.items.map((item) => { const start = itemStarts.get(item.id); return start ? { ...item, x: start.x + appliedX, y: start.y + appliedY } : item; }), ...(gesture.groupChoiceBank ? { choiceBankX: gesture.groupChoiceBank.x + appliedX, choiceBankY: gesture.groupChoiceBank.y + appliedY } : {}) });
+          setSnapGuides({ x: null, y: null });
+          return;
+        }
         const width = gesture.startWidth || 20;
         const height = gesture.startHeight || 20;
         const lines = getSnapLines(bounds, { elementId: gesture.elementId });
@@ -715,7 +849,7 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
     setEditingElementId(element.id);
   };
   const addTable = () => {
-    const element: DragDropCanvasElement = { id: makeDragDropId(), type: "table", rows: 2, columns: 2, cells: [["", ""], ["", ""]], cellHtml: [["", ""], ["", ""]], cellVerticalAlign: [["middle", "middle"], ["middle", "middle"]], fontSize: 16, columnWidths: [50, 50], rowHeights: [50, 50], showBorders: true, x: 22, y: 32, width: 52, height: 34 };
+    const element: DragDropCanvasElement = { id: makeDragDropId(), type: "table", rows: 2, columns: 2, cells: [["", ""], ["", ""]], cellHtml: [["", ""], ["", ""]], cellHorizontalAlign: [["center", "center"], ["center", "center"]], cellVerticalAlign: [["middle", "middle"], ["middle", "middle"]], fontSize: 16, columnWidths: [50, 50], rowHeights: [50, 50], showBorders: true, x: 22, y: 32, width: 52, height: 34 };
     updateElements([...(data.canvasElements || []), element]);
     setEditingElementId(element.id);
   };
@@ -781,8 +915,30 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
         setShowShapeMenu(false);
       }
     }
+    if (historyGestureRef.current) {
+      if (gestureMovedRef.current && JSON.stringify(historyGestureRef.current) !== JSON.stringify(captureHistorySnapshot())) {
+        undoStackRef.current.push(historyGestureRef.current);
+        redoStackRef.current = [];
+        setHistoryRevision((current) => current + 1);
+      }
+      historyGestureRef.current = null;
+    }
+    if (gesture?.kind === "element-marquee") setSelectionMarquee(null);
     setGesture(null);
     setSnapGuides({ x: null, y: null });
+  };
+  const handleCanvasKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    const editable = event.target instanceof Element && !!event.target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="slider"]');
+    if (!editable && (event.metaKey || event.ctrlKey) && !event.altKey) {
+      const key = event.key.toLowerCase();
+      if (key === "z" || key === "y") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (key === "y" || event.shiftKey) redo(); else undo();
+        return;
+      }
+    }
+    nudgeAsset(event);
   };
   const addImageElements = (images: Array<{ url: string; path: string }>) => {
     const existingCount = (data.canvasElements || []).filter((element) => element.type === "image").length;
@@ -816,6 +972,7 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
     columns,
     cells: Array.from({ length: rows }, (_, rowIndex) => Array.from({ length: columns }, (_, columnIndex) => element.cells?.[rowIndex]?.[columnIndex] || "")),
     cellHtml: Array.from({ length: rows }, (_, rowIndex) => Array.from({ length: columns }, (_, columnIndex) => element.cellHtml?.[rowIndex]?.[columnIndex] || "")),
+    cellHorizontalAlign: Array.from({ length: rows }, (_, rowIndex) => Array.from({ length: columns }, (_, columnIndex) => element.cellHorizontalAlign?.[rowIndex]?.[columnIndex] || "center")),
     cellVerticalAlign: Array.from({ length: rows }, (_, rowIndex) => Array.from({ length: columns }, (_, columnIndex) => element.cellVerticalAlign?.[rowIndex]?.[columnIndex] || "middle")),
     rowHeights: getCanvasTrackSizes(rows, element.rowHeights),
     columnWidths: getCanvasTrackSizes(columns, element.columnWidths),
@@ -853,6 +1010,7 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
       mergedCells: [...(element.mergedCells || []).filter((merge) => !overlaps(merge)), { row, column, rowSpan, columnSpan }],
       cells: Array.from({ length: element.rows || 2 }, (_, currentRow) => Array.from({ length: element.columns || 2 }, (_, currentColumn) => currentRow >= row && currentRow < row + rowSpan && currentColumn >= column && currentColumn < column + columnSpan && (currentRow !== row || currentColumn !== column) ? "" : element.cells?.[currentRow]?.[currentColumn] || "")),
       cellHtml: Array.from({ length: element.rows || 2 }, (_, currentRow) => Array.from({ length: element.columns || 2 }, (_, currentColumn) => currentRow >= row && currentRow < row + rowSpan && currentColumn >= column && currentColumn < column + columnSpan && (currentRow !== row || currentColumn !== column) ? "" : element.cellHtml?.[currentRow]?.[currentColumn] || "")),
+      cellHorizontalAlign: Array.from({ length: element.rows || 2 }, (_, currentRow) => Array.from({ length: element.columns || 2 }, (_, currentColumn) => currentRow >= row && currentRow < row + rowSpan && currentColumn >= column && currentColumn < column + columnSpan && (currentRow !== row || currentColumn !== column) ? "center" : element.cellHorizontalAlign?.[currentRow]?.[currentColumn] || "center")),
       cellVerticalAlign: Array.from({ length: element.rows || 2 }, (_, currentRow) => Array.from({ length: element.columns || 2 }, (_, currentColumn) => currentRow >= row && currentRow < row + rowSpan && currentColumn >= column && currentColumn < column + columnSpan && (currentRow !== row || currentColumn !== column) ? "middle" : element.cellVerticalAlign?.[currentRow]?.[currentColumn] || "middle")),
     });
     selectTableCell(element.id, row, column, false);
@@ -1038,7 +1196,7 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
   };
 
   return (
-    <section className="space-y-4 rounded-xl border border-slate-300 bg-white p-4">
+    <section onKeyDown={handleCanvasKeyDown} className="space-y-4 rounded-xl border border-slate-300 bg-white p-4">
       <div className="flex flex-wrap items-start gap-3">
         <div><h3 className="font-semibold text-slate-950">{title}</h3><p className="mt-1 text-sm text-slate-500">{description}</p></div>
       </div>
@@ -1093,13 +1251,13 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
         <div className="mt-3 flex justify-end gap-2"><button type="button" onClick={() => setShowImages(false)} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700">Cancel</button><button type="button" disabled={!selectedLibraryImages.length} onClick={() => { addImageElements(uploadedImages.filter((image) => selectedLibraryImages.includes(image.url))); setSelectedLibraryImages([]); setShowImages(false); }} className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-40">Add selected ({selectedLibraryImages.length})</button></div>
       </div>}
 
-      <div ref={canvasRef} tabIndex={0} aria-label="Canvas editor — select an asset and use arrow keys to move it or Delete to remove it" onKeyDown={nudgeAsset} onPointerDownCapture={(event) => {
+      <div ref={canvasRef} tabIndex={0} aria-label="Canvas editor — drag on empty space to select assets, then drag the group to move it" onPointerDownCapture={(event) => {
         if (!(event.target instanceof Element)) return;
         const asset = event.target.closest<HTMLElement>("[data-nudge-kind]");
         nudgeTargetRef.current = asset;
         selectedChoiceRef.current = event.target.closest<HTMLElement>("[data-choice-item-id]")?.dataset.choiceItemId || null;
         if (asset && !event.target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) event.currentTarget.focus({ preventScroll: true });
-      }} style={{ containerType: "inline-size", aspectRatio: `100 / ${canvasHeight}` }} onPointerDown={(event) => { if (!(event.target instanceof Element) || !event.target.closest("[data-canvas-object]")) { setEditingItemId(null); setEditingElementId(null); setEditingOverlayId(null); setEditingTextId(null); setEditingZoneId(null); setTableSelection(null); setEditingTableCell(null); } beginShapeDraw(event); }} onPointerMove={moveGesture} onPointerUp={finishGesture} onPointerCancel={finishGesture} className={`relative z-10 w-full overflow-visible border border-slate-300 bg-slate-100 ${drawingShapeKind ? "cursor-crosshair touch-none ring-2 ring-blue-400" : ""}`}>
+      }} style={{ containerType: "inline-size", aspectRatio: `100 / ${canvasHeight}`, fontFamily: "var(--font-geist-sans), Arial, Helvetica, sans-serif" }} onPointerDown={(event) => { if (!(event.target instanceof Element) || !event.target.closest("[data-canvas-object]")) { setEditingItemId(null); setEditingElementId(null); setEditingOverlayId(null); setEditingTextId(null); setEditingZoneId(null); setTableSelection(null); setEditingTableCell(null); } if (drawingShapeKind) beginShapeDraw(event); else beginMarqueeSelection(event); }} onPointerMove={moveGesture} onPointerUp={finishGesture} onPointerCancel={finishGesture} className={`relative z-10 w-full overflow-visible border border-slate-300 bg-slate-100 ${drawingShapeKind ? "cursor-crosshair touch-none ring-2 ring-blue-400" : ""}`}>
         {data.backgroundImageUrl
           ? <img src={data.backgroundImageUrl} alt="Location question background" className="absolute inset-0 h-full w-full select-none object-contain" draggable={false} />
           : !(data.canvasElements || []).length && !data.zones.length && !data.items.length && !overlayBlocks.length
@@ -1110,11 +1268,16 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
         </div>
         {snapGuides.x !== null && <div className="pointer-events-none absolute bottom-0 top-0 z-[60] w-px bg-fuchsia-500 shadow-[0_0_0_1px_rgba(255,255,255,0.8)]" style={{ left: `${snapGuides.x}%` }} aria-hidden="true" />}
         {snapGuides.y !== null && <div className="pointer-events-none absolute left-0 right-0 z-[60] h-px bg-fuchsia-500 shadow-[0_0_0_1px_rgba(255,255,255,0.8)]" style={{ top: `${snapGuides.y}%` }} aria-hidden="true" />}
+        {selectionMarquee && <div className="pointer-events-none absolute z-[70] border-2 border-blue-600 bg-blue-300/20" style={{ left: `${selectionMarquee.x}%`, top: `${selectionMarquee.y}%`, width: `${selectionMarquee.width}%`, height: `${selectionMarquee.height}%` }} aria-hidden="true" />}
+        <div data-canvas-object onPointerDown={(event) => event.stopPropagation()} className="absolute bottom-2 right-2 z-[90] flex items-center gap-1 rounded-lg border border-slate-300 bg-white/95 p-1 shadow-lg backdrop-blur-sm">
+          <button type="button" onClick={undo} disabled={!undoStackRef.current.length} title="Undo (Ctrl/Cmd+Z)" aria-label="Undo" className="h-8 rounded-md px-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40">↶ Undo</button>
+          <button type="button" onClick={redo} disabled={!redoStackRef.current.length} title="Redo (Ctrl/Cmd+Shift+Z or Ctrl+Y)" aria-label="Redo" className="h-8 rounded-md px-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40">↷ Redo</button>
+        </div>
         <div className={`absolute inset-0 ${drawingShapeKind ? "pointer-events-none" : ""}`}>
-          {(data.canvasElements || []).map((element) => { const isInlineEditing = editingElementId === element.id && (element.type === "text" || element.type === "table" || element.type === "image" || element.type === "number-line" || element.type === "shape" || element.type === "algebra-tile"); const selectedTableCells = element.type === "table" ? getSelectedTableCells(element.id) : []; const selectedCellSet = new Set(selectedTableCells); const selectedMerge = element.type === "table" ? (element.mergedCells || []).find((merge) => Array.from({ length: merge.rowSpan }, (_, rowOffset) => Array.from({ length: merge.columnSpan }, (_, columnOffset) => `${merge.row + rowOffset}:${merge.column + columnOffset}`)).flat().some((cell) => selectedCellSet.has(cell))) : undefined; const activeTableCell = editingTableCell?.elementId === element.id ? editingTableCell : null; return <div key={element.id} data-nudge-kind="element" data-nudge-id={element.id} data-canvas-object onPointerDown={(event) => { if (element.type !== "text") beginElementGesture(event, element, "element-move"); }} onClick={(event) => { event.stopPropagation(); if (!gestureMovedRef.current) { setEditingZoneId(null); setEditingElementId(element.id); setEditingTextId(element.type === "text" && event.detail >= 2 ? element.id : null); if (element.type !== "table") { setTableSelection(null); setEditingTableCell(null); } } }} onDoubleClick={(event) => { if (element.type === "text") { event.preventDefault(); event.stopPropagation(); setEditingElementId(element.id); setEditingTextId(element.id); } }} className={`absolute box-border cursor-move touch-none ${isInlineEditing ? "z-[80]" : "z-0"} ${element.type === "shape" ? "" : `bg-white/20 ${editingElementId === element.id ? "ring-2 ring-violet-500" : "hover:ring-2 hover:ring-violet-300"}`}`} style={{ left: `${element.x}%`, top: `${element.y}%`, width: `${element.width}%`, height: `${element.height}%` }}>
+          {(data.canvasElements || []).map((element) => { const isInlineEditing = editingElementId === element.id && (element.type === "text" || element.type === "table" || element.type === "image" || element.type === "number-line" || element.type === "shape" || element.type === "algebra-tile"); const isGroupSelected = selectedElementIds.includes(element.id); const selectedTableCells = element.type === "table" ? getSelectedTableCells(element.id) : []; const selectedCellSet = new Set(selectedTableCells); const selectedMerge = element.type === "table" ? (element.mergedCells || []).find((merge) => Array.from({ length: merge.rowSpan }, (_, rowOffset) => Array.from({ length: merge.columnSpan }, (_, columnOffset) => `${merge.row + rowOffset}:${merge.column + columnOffset}`)).flat().some((cell) => selectedCellSet.has(cell))) : undefined; const activeTableCell = editingTableCell?.elementId === element.id ? editingTableCell : null; return <div key={element.id} data-nudge-kind="element" data-nudge-id={element.id} data-canvas-object onPointerDown={(event) => { if (element.type !== "text") beginElementGesture(event, element, "element-move"); }} onClick={(event) => { event.stopPropagation(); if (!gestureMovedRef.current) { setEditingZoneId(null); setEditingElementId(element.id); setEditingTextId(element.type === "text" && event.detail >= 2 ? element.id : null); if (selectedElementIds.length <= 1) setSelectedElementIds([element.id]); if (element.type !== "table") { setTableSelection(null); setEditingTableCell(null); } } }} onDoubleClick={(event) => { if (element.type === "text") { event.preventDefault(); event.stopPropagation(); setEditingElementId(element.id); setEditingTextId(element.id); } }} className={`absolute box-border cursor-move touch-none ${isInlineEditing ? "z-[80]" : "z-0"} ${isGroupSelected ? "ring-2 ring-blue-600 ring-offset-1" : element.type === "shape" ? "" : `bg-white/20 ${editingElementId === element.id ? "ring-2 ring-violet-500" : "hover:ring-2 hover:ring-violet-300"}`}`} style={{ left: `${element.x}%`, top: `${element.y}%`, width: `${element.width}%`, height: `${element.height}%` }}>
             {element.type === "text"
               ? <CanvasInlineTextEditor element={element} selected={editingElementId === element.id} editing={editingElementId === element.id && editingTextId === element.id} toolbarPlacement={element.y < 35 ? "below" : "above"} onChange={(patch) => updateElement(element.id, patch)} onMovePointerDown={(event) => beginElementGesture(event, element, "element-move")} onStartEditing={() => { setEditingElementId(element.id); setEditingTextId(element.id); }} onDelete={() => { updateElements((data.canvasElements || []).filter((currentElement) => currentElement.id !== element.id)); setEditingTextId(null); setEditingElementId(null); }} />
-              : <LocationCanvasElementContent element={element} editableTable={element.type === "table" && editingElementId === element.id} activeTableCell={activeTableCell} selectedTableCells={selectedTableCells} onTableCellFocus={(rowIndex, columnIndex) => { setEditingTableCell({ elementId: element.id, row: rowIndex, column: columnIndex }); setTableMathPanel(null); refreshTableHorizontalAlign(); }} onTableCellSelect={(rowIndex, columnIndex, extend) => selectTableCell(element.id, rowIndex, columnIndex, extend)} onTableCellPointerDown={(event) => beginElementGesture(event, element, "element-move", undefined, true)} onTableMathEdit={editTableMath} onTableCellChange={(rowIndex, columnIndex, html, text) => updateElement(element.id, { cells: Array.from({ length: element.rows || 2 }, (_, currentRow) => Array.from({ length: element.columns || 2 }, (_, currentColumn) => currentRow === rowIndex && currentColumn === columnIndex ? text : element.cells?.[currentRow]?.[currentColumn] || "")), cellHtml: Array.from({ length: element.rows || 2 }, (_, currentRow) => Array.from({ length: element.columns || 2 }, (_, currentColumn) => currentRow === rowIndex && currentColumn === columnIndex ? html : element.cellHtml?.[currentRow]?.[currentColumn] || "")) })} />}
+              : <LocationCanvasElementContent element={element} editableTable={element.type === "table" && editingElementId === element.id} activeTableCell={activeTableCell} selectedTableCells={selectedTableCells} onTableCellFocus={(rowIndex, columnIndex) => { setEditingTableCell({ elementId: element.id, row: rowIndex, column: columnIndex }); setTableHorizontalAlign(element.cellHorizontalAlign?.[rowIndex]?.[columnIndex] || "center"); setTableMathPanel(null); refreshTableHorizontalAlign(); }} onTableCellSelect={(rowIndex, columnIndex, extend) => selectTableCell(element.id, rowIndex, columnIndex, extend)} onTableCellPointerDown={(event) => beginElementGesture(event, element, "element-move", undefined, true)} onTableMathEdit={editTableMath} onTableCellChange={(rowIndex, columnIndex, html, text) => updateElement(element.id, { cells: Array.from({ length: element.rows || 2 }, (_, currentRow) => Array.from({ length: element.columns || 2 }, (_, currentColumn) => currentRow === rowIndex && currentColumn === columnIndex ? text : element.cells?.[currentRow]?.[currentColumn] || "")), cellHtml: Array.from({ length: element.rows || 2 }, (_, currentRow) => Array.from({ length: element.columns || 2 }, (_, currentColumn) => currentRow === rowIndex && currentColumn === columnIndex ? html : element.cellHtml?.[currentRow]?.[currentColumn] || "")) })} />}
             {element.type === "image" && editingElementId === element.id && <div data-canvas-object onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} className={`absolute left-0 z-50 flex w-max max-w-[calc(100cqw-1rem)] items-center gap-1 rounded-lg border border-slate-300 bg-slate-50 p-1.5 text-xs shadow-lg ${element.y < 12 ? "top-full mt-1" : "bottom-full mb-1"}`} style={{ transform: `translateX(clamp(-${element.x}cqw, 0px, calc(${100 - element.x}cqw - 100%)))` }}><span className="px-1 font-semibold text-slate-700">Image</span><button type="button" onClick={() => setEditingElementId(null)} className="h-7 rounded border border-slate-300 bg-white px-2 font-semibold text-blue-800 shadow-sm hover:bg-blue-50">Done</button><button type="button" onClick={() => { updateElements((data.canvasElements || []).filter((currentElement) => currentElement.id !== element.id)); setEditingElementId(null); }} className="h-7 rounded border border-red-300 bg-white px-2 font-semibold text-red-700 shadow-sm hover:bg-red-50">Delete</button></div>}
             {element.type === "number-line" && editingElementId === element.id && <div data-canvas-object onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} className={`absolute left-0 z-50 w-[26rem] max-w-[calc(100cqw-1rem)] rounded-xl border border-blue-200 shadow-xl top-full mt-2`} style={{ transform: `translateX(clamp(-${element.x}cqw, 0px, calc(${100 - element.x}cqw - 100%)))` }}>
               <NumberLineSettings key={element.id} copySize={{ width: element.width, height: element.height }} initial={getCanvasNumberLine(element)} onChange={(value) => updateElement(element.id, { numberLine: { ...value, divisions: getCanvasNumberLine(element).divisions } })} onSave={() => setEditingElementId(null)} onDelete={() => { updateElements((data.canvasElements || []).filter((currentElement) => currentElement.id !== element.id)); setEditingElementId(null); }} />
@@ -1152,7 +1315,7 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
                   <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => runTableTextCommand("bold")} className="grid h-7 min-w-7 place-items-center rounded border border-slate-300 bg-white px-1.5 text-xs font-bold text-slate-800 hover:bg-blue-100" aria-label="Bold selected cell text">B</button>
                   <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => runTableTextCommand("italic")} className="grid h-7 min-w-7 place-items-center rounded border border-slate-300 bg-white px-1.5 text-xs italic text-slate-800 hover:bg-blue-100" aria-label="Italicize selected cell text">I</button>
                   <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => runTableTextCommand("underline")} className="grid h-7 min-w-7 place-items-center rounded border border-slate-300 bg-white px-1.5 text-xs underline text-slate-800 hover:bg-blue-100" aria-label="Underline selected cell text">U</button>
-                  {(["Left", "Center", "Right"] as const).map((alignment) => { const selectedAlignment = tableHorizontalAlign === alignment.toLowerCase(); return <button key={alignment} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => runTableTextCommand(`justify${alignment}`)} aria-pressed={selectedAlignment} className={`grid h-7 min-w-7 place-items-center rounded border px-1.5 ${selectedAlignment ? ACTIVE_TEXT_TOOLBAR_BUTTON : "border-slate-300 bg-white text-slate-800 hover:bg-blue-100"}`} aria-label={`Align selected cell text ${alignment.toLowerCase()}`} title={`Align ${alignment.toLowerCase()}`}><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">{alignment === "Left" ? <path d="M3 4h14M3 8h9M3 12h14M3 16h9" /> : alignment === "Center" ? <path d="M3 4h14M5.5 8h9M3 12h14M5.5 16h9" /> : <path d="M3 4h14M8 8h9M3 12h14M8 16h9" />}</svg></button>; })}
+                  {(["Left", "Center", "Right"] as const).map((alignment) => { const value = alignment.toLowerCase() as "left" | "center" | "right"; const selectedAlignment = tableHorizontalAlign === value; return <button key={alignment} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => { setTableHorizontalAlign(value); updateElement(element.id, { cellHorizontalAlign: Array.from({ length: element.rows || 2 }, (_, rowIndex) => Array.from({ length: element.columns || 2 }, (_, columnIndex) => rowIndex === activeTableCell.row && columnIndex === activeTableCell.column ? value : element.cellHorizontalAlign?.[rowIndex]?.[columnIndex] || "center")) }); }} aria-pressed={selectedAlignment} className={`grid h-7 min-w-7 place-items-center rounded border px-1.5 ${selectedAlignment ? ACTIVE_TEXT_TOOLBAR_BUTTON : "border-slate-300 bg-white text-slate-800 hover:bg-blue-100"}`} aria-label={`Align selected cell text ${value}`} title={`Align ${value}`}><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">{alignment === "Left" ? <path d="M3 4h14M3 8h9M3 12h14M3 16h9" /> : alignment === "Center" ? <path d="M3 4h14M5.5 8h9M3 12h14M5.5 16h9" /> : <path d="M3 4h14M8 8h9M3 12h14M8 16h9" />}</svg></button>; })}
                   {(["top", "middle", "bottom"] as const).map((alignment) => {
                     const selectedAlignment = (element.cellVerticalAlign?.[activeTableCell.row]?.[activeTableCell.column] || "middle") === alignment;
                     return <button key={alignment} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => updateElement(element.id, { cellVerticalAlign: Array.from({ length: element.rows || 2 }, (_, rowIndex) => Array.from({ length: element.columns || 2 }, (_, columnIndex) => rowIndex === activeTableCell.row && columnIndex === activeTableCell.column ? alignment : element.cellVerticalAlign?.[rowIndex]?.[columnIndex] || "middle")) })} className={`grid h-7 min-w-7 place-items-center rounded border px-1.5 ${selectedAlignment ? ACTIVE_TEXT_TOOLBAR_BUTTON : "border-slate-300 bg-white text-slate-800 hover:bg-blue-100"}`} aria-label={`Align cell text to the ${alignment}`} title={`Align ${alignment}`}><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="h-4 w-4" aria-hidden="true"><path d="M3 3h14M3 17h14" />{alignment === "top" ? <path d="M6 6h8M8 9h4" /> : alignment === "middle" ? <path d="M6 8h8M8 11h4" /> : <path d="M8 11h4M6 14h8" />}</svg></button>;
@@ -1193,7 +1356,7 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
             </>}
           </div>)}
           {overlayBlocks.map((overlay) => editingOverlayId === overlay.id && overlay.editor ? <div key={`overlay-editor-${overlay.id}`} data-canvas-object onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} className="absolute z-50 w-80 max-w-[calc(100%-1rem)] rounded-xl border border-emerald-300 bg-white p-3 text-left shadow-xl" style={{ left: `min(${overlay.bounds.x}%, calc(100% - 20rem))`, ...(overlay.bounds.y > 52 ? { bottom: `calc(${100 - overlay.bounds.y}% + 0.8cqw)` } : { top: `calc(${overlay.bounds.y + overlay.bounds.height}% + 0.8cqw)` }) }}>{overlay.editor}</div> : null)}
-          {!compositionOnly && choicesAreGrouped && <div data-nudge-kind="choices" data-canvas-object data-choice-bank onPointerDown={() => { setEditingElementId(null); setEditingZoneId(null); setTableSelection(null); setEditingTableCell(null); }} className="absolute z-30" style={{ left: `${data.choiceBankX ?? 8}%`, top: `max(${data.choiceBankY ?? 6}%, ${CHOICE_GROUP_TOOLBAR_CLEARANCE_PX}px)` }}>
+          {!compositionOnly && choicesAreGrouped && <div data-nudge-kind="choices" data-canvas-object data-choice-bank onPointerDown={() => { setEditingElementId(null); setEditingZoneId(null); setTableSelection(null); setEditingTableCell(null); }} className={`absolute z-30 ${choiceBankSelected ? "ring-2 ring-blue-600 ring-offset-2" : ""}`} style={{ left: `${data.choiceBankX ?? 8}%`, top: `max(${data.choiceBankY ?? 6}%, ${CHOICE_GROUP_TOOLBAR_CLEARANCE_PX}px)` }}>
             <div className="absolute bottom-full left-0 z-10 mb-1 flex w-max items-center gap-1">
               <button type="button" onPointerDown={beginChoiceGesture} className="cursor-move touch-none whitespace-nowrap rounded bg-blue-700 px-2 py-1 text-xs font-bold text-white shadow">Move group</button>
               {choiceOnly && allowChoiceMarkers && <select value={choicePresentation === "box" ? "content" : choicePresentation} onChange={(event) => onChange({ ...data, choicePresentation: event.target.value as "content" | "radio" | "box" })} className="h-6 rounded border border-blue-300 bg-white px-1.5 text-xs font-semibold text-blue-900 shadow" aria-label="Choice appearance" title="Choice appearance"><option value="content">Word / image</option><option value="radio">Radio buttons</option></select>}
@@ -1203,15 +1366,15 @@ export default function LocationCanvasEditor({ data, onChange, uploadedImages, i
               {<button type="button" onClick={ungroupChoices} className="whitespace-nowrap rounded bg-white px-2 py-1 text-xs font-bold text-blue-800 shadow ring-1 ring-blue-300">Ungroup</button>}
             </div>
             <div className={`flex w-max ${choicesAreVertical ? "flex-col" : "flex-row"}`} style={{ gap: "0.8cqw" }}>{data.items.map((item, index) => <div key={item.id} className="relative shrink-0" style={choicePresentation === "content" ? { ...contentBoxStyle(item) } : choicePresentation === "radio" ? { width: "3.2cqw", height: "3.2cqw" } : { width: `${item.width ?? 6}cqw`, height: `${(item.height ?? 10.5) * 9 / 16}cqw` }}><button type="button" data-choice-item-id={item.id} aria-label={item.content || `${choicePlaceholder} ${index + 1}`} onClick={() => { setEditingElementId(null); setEditingZoneId(null); setTableSelection(null); setEditingItemId(item.id); setShowChoiceImages(false); }} style={{ paddingTop: choicePresentation === "content" ? (choiceOnly ? "1cqw" : "0.6cqw") : 0, paddingBottom: choicePresentation === "content" ? (choiceOnly ? "1cqw" : "0.6cqw") : 0, paddingRight: choicePresentation === "content" ? (choiceOnly ? "1.2cqw" : "0.8cqw") : 0, paddingLeft: choicePresentation === "content" ? (choiceSelectionMode === "multiple" ? "4cqw" : choiceOnly ? "1.2cqw" : "0.8cqw") : 0, fontSize: "1.7cqw" }} className={`relative box-border flex h-full w-full flex-col ${choiceOnly && choicePresentation === "content" ? "items-start text-left" : "items-center text-center"} ${choiceVerticalClass(item)} border bg-white/50 font-medium text-black shadow-sm transition hover:ring-2 ${choiceOnly && choicePresentation === "content" ? "whitespace-nowrap" : ""} ${choicePresentation === "radio" ? "rounded-full border-2" : choiceOnly ? "rounded" : "rounded-none"} ${isChoiceCorrect?.(item.id, index) ? "border-emerald-600 ring-2 ring-emerald-300 hover:border-emerald-700 hover:ring-emerald-300" : editingItemId === item.id ? "border-blue-700 ring-2 ring-blue-300 hover:border-blue-700 hover:ring-blue-300" : "border-slate-400 hover:border-blue-600 hover:ring-blue-200"}`}>
-                {choicePresentation === "content" && (itemPreviewUrls[item.id] || item.imageUrl) && <img src={itemPreviewUrls[item.id] || item.imageUrl} alt="" style={{ maxHeight: "10cqw", maxWidth: "14cqw", marginBottom: "0.5cqw" }} className="min-h-0 flex-1 object-contain" />}
+                {choicePresentation === "content" && (itemPreviewUrls[item.id] || item.imageUrl) && <img src={itemPreviewUrls[item.id] || item.imageUrl} alt="" className="mb-[0.5cqw] h-0 min-h-0 w-full max-w-full flex-1 object-contain" />}
                 {choicePresentation === "content" && choiceText(item, index)}
-              </button>{emptyChoice(item) && editingItemId === item.id && choiceResizeHandles(item)}</div>)}</div>
+              </button>{editingItemId === item.id && (emptyChoice(item) || (choiceOnly && choicePresentation === "content" && data.choiceSameSize !== true)) && choiceResizeHandles(item)}</div>)}</div>
           </div>}
           {!compositionOnly && !choicesAreGrouped && data.items.length > 0 && <div data-canvas-object className="absolute left-2 top-2 z-40 flex items-center gap-1"><button type="button" onClick={() => onChange({ ...data, choiceBankGrouped: true, choiceBankX: Math.min(...data.items.map((item) => item.x ?? 8)), choiceBankY: Math.min(...data.items.map((item) => item.y ?? 35)) })} className="rounded bg-blue-700 px-2 py-1 text-xs font-bold text-white shadow">Group choices</button>{choiceOnly && allowChoiceMarkers && <select value={choicePresentation === "box" ? "content" : choicePresentation} onChange={(event) => onChange({ ...data, choicePresentation: event.target.value as "content" | "radio" | "box" })} className="h-6 rounded border border-blue-300 bg-white px-1.5 text-xs font-semibold text-blue-900 shadow" aria-label="Choice appearance"><option value="content">Word / image</option><option value="radio">Radio buttons</option></select>}{sameSizeControl}</div>}
-          {!compositionOnly && !choicesAreGrouped && data.items.map((item, index) => <div key={item.id} data-nudge-kind="item" data-nudge-id={item.id} data-canvas-object role="button" aria-label={item.content || `${choicePlaceholder} ${index + 1}`} onPointerDown={(event) => beginChoiceItemGesture(event, item)} onClick={(event) => { event.stopPropagation(); if (!gestureMovedRef.current) { setEditingItemId(item.id); setShowChoiceImages(false); } }} className={`absolute z-30 box-border flex cursor-move touch-none flex-col ${choiceOnly && choicePresentation === "content" ? "items-start text-left" : "items-center text-center"} ${choiceVerticalClass(item)} border bg-white/50 font-medium text-black shadow-sm transition hover:ring-2 ${choiceOnly && choicePresentation === "content" ? "whitespace-nowrap" : ""} ${choicePresentation === "radio" ? "rounded-full border-2" : choiceOnly ? "rounded" : "rounded-none"} ${isChoiceCorrect?.(item.id, index) ? "border-emerald-600 ring-2 ring-emerald-300 hover:border-emerald-700 hover:ring-emerald-300" : editingItemId === item.id ? "border-blue-700 ring-2 ring-blue-300 hover:border-blue-700 hover:ring-blue-300" : "border-slate-400 hover:border-blue-600 hover:ring-blue-200"}`} style={{ left: `${item.x ?? 8}%`, top: `${item.y ?? 35}%`, ...(choicePresentation === "content" ? contentBoxStyle(item) : choicePresentation === "radio" ? { width: "3.2cqw", height: "3.2cqw" } : { width: `${item.width ?? 6}%`, height: `${item.height ?? 10.5}%` }), paddingTop: choicePresentation === "content" ? (choiceOnly ? "1cqw" : "0.6cqw") : 0, paddingBottom: choicePresentation === "content" ? (choiceOnly ? "1cqw" : "0.6cqw") : 0, paddingRight: choicePresentation === "content" ? (choiceOnly ? "1.2cqw" : "0.8cqw") : 0, paddingLeft: choicePresentation === "content" ? (choiceSelectionMode === "multiple" ? "4cqw" : choiceOnly ? "1.2cqw" : "0.8cqw") : 0, fontSize: "1.7cqw" }}>
-            {choicePresentation === "content" && (itemPreviewUrls[item.id] || item.imageUrl) && <img src={itemPreviewUrls[item.id] || item.imageUrl} alt="" draggable={false} style={{ maxHeight: "10cqw", maxWidth: "14cqw", margin: "0 auto 0.5cqw" }} className="pointer-events-none min-h-0 object-contain" />}
+          {!compositionOnly && !choicesAreGrouped && data.items.map((item, index) => <div key={item.id} data-nudge-kind="item" data-nudge-id={item.id} data-canvas-object role="button" aria-label={item.content || `${choicePlaceholder} ${index + 1}`} onPointerDown={(event) => beginChoiceItemGesture(event, item)} onClick={(event) => { event.stopPropagation(); if (!gestureMovedRef.current) { setEditingItemId(item.id); setShowChoiceImages(false); } }} className={`absolute z-30 box-border flex cursor-move touch-none flex-col ${choiceOnly && choicePresentation === "content" ? "items-start text-left" : "items-center text-center"} ${choiceVerticalClass(item)} border bg-white/50 font-medium text-black shadow-sm transition hover:ring-2 ${choiceOnly && choicePresentation === "content" ? "whitespace-nowrap" : ""} ${choicePresentation === "radio" ? "rounded-full border-2" : choiceOnly ? "rounded" : "rounded-none"} ${selectedItemIds.includes(item.id) ? "border-blue-700 ring-2 ring-blue-600 ring-offset-1" : isChoiceCorrect?.(item.id, index) ? "border-emerald-600 ring-2 ring-emerald-300 hover:border-emerald-700 hover:ring-emerald-300" : editingItemId === item.id ? "border-blue-700 ring-2 ring-blue-300 hover:border-blue-700 hover:ring-blue-300" : "border-slate-400 hover:border-blue-600 hover:ring-blue-200"}`} style={{ left: `${item.x ?? 8}%`, top: `${item.y ?? 35}%`, ...(choicePresentation === "content" ? contentBoxStyle(item) : choicePresentation === "radio" ? { width: "3.2cqw", height: "3.2cqw" } : { width: `${item.width ?? 6}%`, height: `${item.height ?? 10.5}%` }), paddingTop: choicePresentation === "content" ? (choiceOnly ? "1cqw" : "0.6cqw") : 0, paddingBottom: choicePresentation === "content" ? (choiceOnly ? "1cqw" : "0.6cqw") : 0, paddingRight: choicePresentation === "content" ? (choiceOnly ? "1.2cqw" : "0.8cqw") : 0, paddingLeft: choicePresentation === "content" ? (choiceSelectionMode === "multiple" ? "4cqw" : choiceOnly ? "1.2cqw" : "0.8cqw") : 0, fontSize: "1.7cqw" }}>
+            {choicePresentation === "content" && (itemPreviewUrls[item.id] || item.imageUrl) && <img src={itemPreviewUrls[item.id] || item.imageUrl} alt="" draggable={false} className="pointer-events-none mb-[0.5cqw] h-0 min-h-0 w-full max-w-full flex-1 object-contain" />}
             {choicePresentation === "content" && choiceText(item, index)}
-            {(choicePresentation === "box" || emptyChoice(item)) && editingItemId === item.id && choiceResizeHandles(item)}
+            {(choicePresentation === "box" || emptyChoice(item) || (choiceOnly && choicePresentation === "content" && data.choiceSameSize !== true)) && editingItemId === item.id && choiceResizeHandles(item)}
           </div>)}
           {editingItemId && (() => { const index = data.items.findIndex((item) => item.id === editingItemId); const item = data.items[index]; if (!item) return null; const precedingOffset = data.items.slice(0, index).reduce((sum, current) => sum + (choicesAreVertical ? itemPercentSize(current).height : itemPercentSize(current).width) + 0.8, 0); const itemCanvasX = choicesAreGrouped ? (data.choiceBankX ?? 8) + (choicesAreVertical ? 0 : precedingOffset) : item.x ?? 8; const itemCanvasY = choicesAreGrouped ? (data.choiceBankY ?? 6) + (choicesAreVertical ? precedingOffset : 0) : item.y ?? 35; return choiceEditor(item, itemCanvasX, itemCanvasY); })()}
           {data.zones.map((zone, index) => <div key={zone.id} data-nudge-kind="zone" data-nudge-id={zone.id} data-canvas-object onPointerDown={(event) => beginGesture(event, zone)} onClick={(event) => { event.stopPropagation(); if (!gestureMovedRef.current) { setEditingElementId(null); setTableSelection(null); setEditingZoneId(zone.id); } }} className={`absolute z-20 box-border cursor-move touch-none border-2 border-dashed bg-blue-100/45 ${editingZoneId === zone.id ? "border-blue-700 ring-2 ring-blue-300" : "border-blue-500"}`} style={{ left: `${zone.x ?? 10}%`, top: `${zone.y ?? 10}%`, ...(data.preset === "category-canvas" ? { width: `${zone.width ?? 43}%`, height: `${zone.height ?? 40}%` } : boxCanvasStyle) }}>

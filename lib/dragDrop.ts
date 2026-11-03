@@ -49,6 +49,7 @@ export type DragDropCanvasElement = {
   columns?: number;
   cells?: string[][];
   cellHtml?: string[][];
+  cellHorizontalAlign?: Array<Array<"left" | "center" | "right">>;
   cellVerticalAlign?: Array<Array<"top" | "middle" | "bottom">>;
   showBorders?: boolean;
   columnWidths?: number[];
@@ -429,7 +430,6 @@ export function getChoiceContentSizes(items: (DragDropItem & { html?: string })[
   const sizes = items.map((item) => {
     const natural = getSingleLineChoiceBoxSize([item], { placeholder: "", selectionMode });
     if (sameSize && hasContent) return { width: shared.width / 10, height: shared.height / 10 };
-    if (!isEmptyChoice(item)) return { width: natural.width / 10, height: natural.height / 10 };
     return { width: item.width ?? natural.width / 10, height: item.height === undefined ? natural.height / 10 : item.height * heightScale };
   });
   return sameSize && !hasContent && sizes.length ? sizes.map(() => sizes[0]) : sizes;
@@ -597,10 +597,10 @@ export function isDragDropAnswered(data: DragDropData, placements: DragDropPlace
     const placed = data.zones.flatMap(zone => placements[zone.id] || []);
     return data.items.length > 0 && data.items.every(item => placed.includes(item.id));
   }
-  const placed = Object.values(placements).flat();
-  const requiredItemIds = new Set(data.zones.flatMap((zone) => zone.correctItemIds));
-  const requiredZonesFilled = data.zones
+  // Completion only means the student supplied enough responses. Correctness is
+  // evaluated separately by gradeDragDrop; a wrong choice must still count as an
+  // attempted answer in the question navigator.
+  return data.zones
     .filter((zone) => zone.correctItemIds.length > 0)
-    .every((zone) => (placements[zone.id] || []).length > 0);
-  return requiredZonesFilled && [...requiredItemIds].every((itemId) => placed.includes(itemId));
+    .every((zone) => (placements[zone.id] || []).filter(Boolean).length >= zone.correctItemIds.length);
 }

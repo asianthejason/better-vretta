@@ -240,6 +240,24 @@ math[data-math-expression] :is(mrow[data-radical-overline="true"], menclose[nota
   margin-top: 0.75em;
 }
 
+.rich-text-content ul,
+.rich-text-content ol {
+  margin: 0.35em 0;
+  padding-left: 1.6em;
+}
+
+.rich-text-content ul {
+  list-style: disc outside;
+}
+
+.rich-text-content ol {
+  list-style: decimal outside;
+}
+
+.rich-text-content li + li {
+  margin-top: 0.15em;
+}
+
 .rich-text-content [data-text-box="true"] {
   background: #f8fafc;
   border: 0.1em solid #94a3b8;

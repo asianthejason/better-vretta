@@ -292,7 +292,7 @@ export default function TeacherPage() {
             <span className="grid size-9 place-items-center rounded-xl bg-blue-600 text-white shadow-sm shadow-blue-200">
               J
             </span>
-            Jretta
+            Cloneretta
           </Link>
           <div className="flex items-center gap-2">
             <Link

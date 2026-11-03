@@ -153,3 +153,28 @@ test("private image migration makes the bucket private and installs owner access
   assert.equal(cleanedSheet.rows[0].path, "");
   await db.close();
 });
+
+test("large unused-image libraries sign fallback URLs in batches", async () => {
+  const originalFetch = globalThis.fetch;
+  const batchSizes: number[] = [];
+  globalThis.fetch = async (_url, options) => {
+    const { paths } = JSON.parse(String(options?.body)) as { paths: string[] };
+    batchSizes.push(paths.length);
+    assert.ok(paths.length <= 200);
+    return Response.json({ urls: Object.fromEntries(paths.map(path => [path, `signed:${path}`])) });
+  };
+  try {
+    const client = {
+      auth: { getSession: async () => ({ data: { session: { access_token: "token" } } }) },
+      storage: { from: () => ({
+        getPublicUrl: (path: string) => ({ data: { publicUrl: `canonical:${path}` } }),
+        createSignedUrls: async () => ({ data: [], error: {} }),
+        createSignedUrl: async () => ({ data: null }),
+      }) },
+    };
+    const images = Array.from({ length: 451 }, (_, index) => ({ image_path: `unused/${index}.png` }));
+    const hydrated = await hydratePrivateImageUrls(client as never, images);
+    assert.deepEqual(batchSizes, [200, 200, 51]);
+    assert.equal((hydrated[450] as unknown as { image_url: string }).image_url, "signed:unused/450.png");
+  } finally { globalThis.fetch = originalFetch; }
+});
