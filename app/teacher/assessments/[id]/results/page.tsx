@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 import { requireAccountRole } from "@/lib/roleGuard";
-import { assessmentSessionIsPresent } from "@/lib/assessmentPresence";
+import { assessmentRoomState, assessmentSessionIsPresent } from "@/lib/assessmentPresence";
 import { compareStudentNamesByLastName } from "@/lib/studentNameSort";
 import {
   gradeDragDrop,
@@ -254,7 +254,7 @@ export default function ResultsPage({
 
   useEffect(() => {
     if (!assessmentId) return;
-    const timer = window.setInterval(() => void refreshLiveRoom(assessmentId), 2000);
+    const timer = window.setInterval(() => void refreshLiveRoom(assessmentId), 1000);
     return () => window.clearInterval(timer);
   }, [assessmentId]);
 
@@ -1072,12 +1072,13 @@ export default function ResultsPage({
             {assignedStudentIds.map((studentId) => {
               const student = rosterByStudent[studentId];
               const session = sessionsByStudent[studentId];
-              const leftRoom = Boolean(session && (session.status === "waiting" || session.status === "active") && !assessmentSessionIsPresent(session.last_activity_at));
-              const statusLabel = !session ? "Not in waiting room" : leftRoom ? "Left room" : session.status === "waiting" ? "Waiting" : session.status === "active" ? "In assessment" : session.status === "blocked" ? "Access paused" : "Submitted";
-              const statusStyle = !session || leftRoom ? "border-slate-300 bg-slate-100 text-slate-950" : session.status === "waiting" ? "border-amber-300 bg-amber-100 text-slate-950" : session.status === "active" ? "border-blue-300 bg-blue-100 text-slate-950" : session.status === "blocked" ? "border-red-300 bg-red-100 text-slate-950" : "border-emerald-300 bg-emerald-100 text-slate-950";
-              const statusDotStyle = !session || leftRoom ? "bg-slate-500" : session.status === "waiting" ? "bg-amber-600" : session.status === "active" ? "bg-blue-600" : session.status === "blocked" ? "bg-red-600" : "bg-emerald-600";
+              const isPresent = Boolean(session && assessmentSessionIsPresent(session.last_activity_at));
+              const roomState = assessmentRoomState(runStatus, session?.status, isPresent);
+              const statusLabel = roomState === "not-entered" ? "Not in waiting room" : roomState === "left" ? "Not in waiting room" : roomState === "waiting" ? "In waiting room" : roomState === "active" ? "In assessment" : roomState === "blocked" ? "Access paused" : "Submitted";
+              const statusStyle = roomState === "not-entered" || roomState === "left" ? "border-slate-300 bg-slate-100 text-slate-950" : roomState === "waiting" ? "border-amber-300 bg-amber-100 text-slate-950" : roomState === "active" ? "border-blue-300 bg-blue-100 text-slate-950" : roomState === "blocked" ? "border-red-300 bg-red-100 text-slate-950" : "border-emerald-300 bg-emerald-100 text-slate-950";
+              const statusDotStyle = roomState === "not-entered" || roomState === "left" ? "bg-slate-500" : roomState === "waiting" ? "bg-amber-600" : roomState === "active" ? "bg-blue-600" : roomState === "blocked" ? "bg-red-600" : "bg-emerald-600";
               const displayName = student?.full_name?.trim() || student?.email || "Student";
-              return <article key={studentId} className={`grid min-w-[920px] grid-cols-[minmax(190px,1.5fr)_170px_175px_110px_110px_150px] items-center gap-4 rounded-xl border px-4 py-3 shadow-sm ${session?.status === "blocked" ? "border-red-300 bg-red-50" : "border-slate-200 bg-white"}`}>
+              return <article key={studentId} className={`grid min-w-[920px] grid-cols-[minmax(190px,1.5fr)_170px_175px_110px_110px_150px] items-center gap-4 rounded-xl border px-4 py-3 shadow-sm ${roomState === "blocked" ? "border-red-300 bg-red-50" : "border-slate-200 bg-white"}`}>
                 <div className="min-w-0">
                   <p className="truncate text-base font-bold text-slate-950">{displayName}</p>
                   <p className="truncate text-xs font-medium text-slate-600">{student?.email || "No email available"}</p>
@@ -1099,7 +1100,7 @@ export default function ResultsPage({
                   <p className={`mt-1 text-sm font-bold ${session?.kick_count ? "text-red-700" : "text-slate-900"}`}>{session?.kick_count ?? "—"}</p>
                 </div>
                 <div className="flex justify-end">
-                  {session?.block_reason ? <button type="button" disabled={grantingStudentId === studentId || runStatus === "ended"} title={runStatus === "ended" ? "Start the assessment again before granting access" : `Restore access: ${session.block_reason}`} onClick={() => void grantReentry(studentId)} className="w-full rounded-lg bg-slate-950 px-4 py-2.5 text-sm font-extrabold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50">{grantingStudentId === studentId ? "Granting…" : "Grant access"}</button> : <span className="h-10 w-full" aria-hidden="true" />}
+                  {roomState === "blocked" && session?.block_reason ? <button type="button" disabled={grantingStudentId === studentId} title={`Restore access: ${session.block_reason}`} onClick={() => void grantReentry(studentId)} className="w-full rounded-lg bg-slate-950 px-4 py-2.5 text-sm font-extrabold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50">{grantingStudentId === studentId ? "Granting…" : "Grant access"}</button> : <span className="h-10 w-full" aria-hidden="true" />}
                 </div>
               </article>;
             })}

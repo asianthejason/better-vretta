@@ -51,6 +51,7 @@ test("assessment waiting, lockdown, teacher grant, and submission are enforced b
     await db.exec(await readFile(new URL("../supabase/migrations/20260913_require_assessment_assignment.sql", import.meta.url), "utf8"));
     await db.exec(await readFile(new URL("../supabase/migrations/20260914_assessment_active_question_time.sql", import.meta.url), "utf8"));
     await db.exec(await readFile(new URL("../supabase/migrations/20260915_assessment_room_presence.sql", import.meta.url), "utf8"));
+    await db.exec(await readFile(new URL("../supabase/migrations/20261103_assessment_room_departure.sql", import.meta.url), "utf8"));
 
     await db.exec(`set role authenticated; select set_config('request.jwt.claim.sub','${student}',false);`);
     await db.exec(`select start_assessment_session('${assessment}')`);
@@ -60,6 +61,9 @@ test("assessment waiting, lockdown, teacher grant, and submission are enforced b
     await assert.rejects(db.exec(`select record_assessment_activity('${assessment}', 10)`), /not active/);
     await db.exec(`update assessment_sessions set last_activity_at='2026-01-01T00:00:00Z' where assessment_id='${assessment}' and student_id='${student}'; select record_assessment_presence('${assessment}');`);
     assert.equal((await db.query<{ fresh: boolean }>(`select last_activity_at > '2026-01-01T00:00:00Z'::timestamptz as fresh from assessment_sessions where assessment_id='${assessment}' and student_id='${student}'`)).rows[0].fresh, true);
+    await db.exec(`select leave_assessment_room('${assessment}')`);
+    assert.equal((await db.query<{ present: boolean }>(`select last_activity_at > now() - interval '30 seconds' as present from assessment_sessions where assessment_id='${assessment}' and student_id='${student}'`)).rows[0].present, false);
+    await db.exec(`select record_assessment_presence('${assessment}')`);
 
     await db.exec(`select record_assessment_kick('${assessment}', 2)`);
     assert.equal((await db.query<{ active_seconds: number }>(`select active_seconds from assessment_sessions where assessment_id='${assessment}' and student_id='${student}'`)).rows[0].active_seconds, 0);

@@ -286,6 +286,7 @@ export default function StudentAssessmentPage({
   const activeSecondsRef = useRef(0);
   const lockdownEndingRef = useRef(false);
   const accessTokenRef = useRef("");
+  const presenceLeavingRef = useRef(false);
   const questionsLoadingRef = useRef(false);
   const questionsLoadedRef = useRef(false);
   const autosaveReadyRef = useRef(false);
@@ -504,14 +505,54 @@ export default function StudentAssessmentPage({
       || entryState.studentStatus === "submitted"
     ) return;
 
+    presenceLeavingRef.current = false;
+    let timer: number | null = null;
+
     const recordPresence = async () => {
-      if (document.visibilityState !== "visible" || !document.hasFocus()) return;
+      if (presenceLeavingRef.current) return;
       await supabase.rpc("record_assessment_presence", { target_assessment: assessment.id });
     };
 
+    const leaveRoom = () => {
+      if (presenceLeavingRef.current) return;
+      presenceLeavingRef.current = true;
+      if (timer !== null) window.clearInterval(timer);
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+      if (supabaseUrl && anonKey && accessTokenRef.current) {
+        void fetch(`${supabaseUrl}/rest/v1/rpc/leave_assessment_room`, {
+          method: "POST",
+          keepalive: true,
+          headers: { apikey: anonKey, Authorization: `Bearer ${accessTokenRef.current}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ target_assessment: assessment.id }),
+        }).catch(() => undefined);
+      } else {
+        void supabase.rpc("leave_assessment_room", { target_assessment: assessment.id });
+      }
+    };
+
+    const recordPresenceWhenVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      presenceLeavingRef.current = false;
+      void recordPresence();
+    };
+
     void recordPresence();
-    const timer = window.setInterval(() => void recordPresence(), 10_000);
-    return () => window.clearInterval(timer);
+    timer = window.setInterval(() => void recordPresence(), 10_000);
+    window.addEventListener("pageshow", recordPresenceWhenVisible);
+    window.addEventListener("focus", recordPresenceWhenVisible);
+    document.addEventListener("visibilitychange", recordPresenceWhenVisible);
+    window.addEventListener("pagehide", leaveRoom);
+    window.addEventListener("beforeunload", leaveRoom);
+    return () => {
+      if (timer !== null) window.clearInterval(timer);
+      window.removeEventListener("pageshow", recordPresenceWhenVisible);
+      window.removeEventListener("focus", recordPresenceWhenVisible);
+      document.removeEventListener("visibilitychange", recordPresenceWhenVisible);
+      window.removeEventListener("pagehide", leaveRoom);
+      window.removeEventListener("beforeunload", leaveRoom);
+      leaveRoom();
+    };
   }, [assessment, accountRole, entryState?.studentStatus, submitted, teacherPreview]);
 
   useEffect(() => {
