@@ -1067,7 +1067,7 @@ export default function ResultsPage({
             <div><h2 className="text-2xl font-bold text-slate-950">Assessment room</h2><p className="mt-1 text-sm leading-6 text-slate-600">The full class list, including students who have not entered the waiting room.</p></div>
             <span className="inline-flex w-fit items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-bold text-blue-900"><span className="size-2 rounded-full bg-blue-600" />{presentStudentCount} of {assignedStudentIds.length} currently in room</span>
           </div>
-          {!assessment.is_published && <p className="border-b border-amber-500/20 bg-amber-500/10 px-5 py-3 text-sm font-semibold text-amber-200">Publish this assessment before students can enter its waiting room.</p>}
+          {!assessment.is_published && <p className="border-b border-amber-500/20 bg-amber-500/10 px-5 py-3 text-sm font-semibold text-black">Publish this assessment before students can enter its waiting room.</p>}
           {assignedStudentIds.length === 0 ? <p className="px-5 py-8 text-slate-600">This assessment does not have a classroom roster.</p> : <div className="grid gap-2 overflow-x-auto bg-slate-100 p-3 sm:p-4">
             {assignedStudentIds.map((studentId) => {
               const student = rosterByStudent[studentId];

@@ -1,10 +1,11 @@
 import { supabase } from "@/lib/supabaseClient";
 import { clearPendingSignup, savePendingSignup } from "@/lib/pendingSignup";
+import type { User } from "@supabase/supabase-js";
 
 export type AccountRole = "teacher" | "student";
 
-export async function requireAccountRole(requiredRole: AccountRole) {
-  const { data: { user } } = await supabase.auth.getUser();
+export async function requireAccountRole(requiredRole: AccountRole, authenticatedUser?: User | null) {
+  const user = authenticatedUser ?? (await supabase.auth.getUser()).data.user;
   if (!user) {
     window.location.replace("/login");
     return null;

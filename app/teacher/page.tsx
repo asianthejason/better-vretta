@@ -23,11 +23,7 @@ type Classroom = { id: string; name: string; join_code: string };
 type AssessmentStats = { assigned: number; completed: number; average: number | null };
 type ClassroomStudent = { classroom_id: string; student_id: string };
 type StudentAttempt = { assessment_id: string; student_id: string | null; score: number | null };
-type AssessmentQuestion = {
-  assessment_id: string;
-  question_type: string;
-  question_data: { overlayBoxes?: unknown[] } | null;
-};
+type AssessmentQuestion = { assessment_id: string };
 function generateInternalAssessmentKey() {
   const letters = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let code = "";
@@ -52,6 +48,7 @@ export default function TeacherPage() {
   const [duplicateBusy, setDuplicateBusy] = useState(false);
   const [publishingAssessmentId, setPublishingAssessmentId] = useState<string | null>(null);
   const [assessmentStats, setAssessmentStats] = useState<Record<string, AssessmentStats>>({});
+  const [statsLoading, setStatsLoading] = useState(false);
   const [copiedClassroomId, setCopiedClassroomId] = useState<string | null>(null);
   const [classrooms, setClassrooms] = useState<Classroom[]>([]);
   const [selectedClassroomId, setSelectedClassroomId] = useState("");
@@ -72,13 +69,13 @@ export default function TeacherPage() {
       setLoading(false);
       return;
     }
-    const user = await requireAccountRole("teacher");
+    const user = await requireAccountRole("teacher", sessionUser);
     if (!user) return;
 
     setUserId(user.id);
 
     const [{ data, error }, { data: classroomData }] = await Promise.all([
-      supabase.from("assessments").select("*").order("created_at", { ascending: false }),
+      supabase.from("assessments").select("id,title,description,is_published,created_at,classroom_id").order("created_at", { ascending: false }),
       supabase.from("classrooms").select("id,name,join_code").order("created_at", { ascending: true }),
     ]);
 
@@ -88,32 +85,18 @@ export default function TeacherPage() {
       return;
     }
 
-    let assessmentData = data || [];
+    const assessmentData = data || [];
     const teacherClassrooms = classroomData || [];
-    const { data: { session } } = await supabase.auth.getSession();
-    if (session && teacherClassrooms.length) {
-      const results = await Promise.all(teacherClassrooms.map(async (classroom) => {
-        const response = await fetch("/api/classrooms/default-assessment", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${session.access_token}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ classroomId: classroom.id }),
-        });
-        return response.ok ? await response.json() as { created?: boolean } : null;
-      }));
-      if (results.some((result) => result?.created)) {
-        const { data: refreshedAssessments } = await supabase.from("assessments").select("*").order("created_at", { ascending: false });
-        assessmentData = refreshedAssessments || assessmentData;
-      }
-    }
 
     setAssessments(assessmentData);
     setClassrooms(teacherClassrooms);
-    await loadAssessmentStats(assessmentData, teacherClassrooms);
     if (classroomData?.[0]) setSelectedClassroomId((current) => current || classroomData[0].id);
     setLoading(false);
+    void loadAssessmentStats(assessmentData, teacherClassrooms);
   }
 
   async function loadAssessmentStats(assessmentData: Assessment[], classroomData: Classroom[]) {
+    setStatsLoading(true);
     const assessmentIds = assessmentData.map((assessment) => assessment.id);
     const classroomIds = classroomData.map((classroom) => classroom.id);
     const [studentResult, attemptResult, questionResult] = await Promise.all([
@@ -124,12 +107,13 @@ export default function TeacherPage() {
         ? supabase.from("student_attempts").select("assessment_id,student_id,score").in("assessment_id", assessmentIds)
         : Promise.resolve({ data: [] as StudentAttempt[], error: null }),
       assessmentIds.length
-        ? supabase.from("questions").select("assessment_id,question_type,question_data").in("assessment_id", assessmentIds)
+        ? supabase.from("questions").select("assessment_id").in("assessment_id", assessmentIds)
         : Promise.resolve({ data: [] as AssessmentQuestion[], error: null }),
     ]);
 
     if (studentResult.error || attemptResult.error || questionResult.error) {
       console.error("Unable to load assessment statistics", studentResult.error || attemptResult.error || questionResult.error);
+      setStatsLoading(false);
       return;
     }
 
@@ -169,6 +153,7 @@ export default function TeacherPage() {
       nextStats[assessment.id] = { assigned: assignedStudents.size, completed: completedStudents.size, average };
     });
     setAssessmentStats(nextStats);
+    setStatsLoading(false);
   }
 
   async function togglePublished(assessment: Assessment) {
@@ -507,13 +492,13 @@ export default function TeacherPage() {
                     <div className="mt-2 grid grid-cols-2 divide-x divide-slate-200 rounded-md border border-slate-200 bg-white py-1.5 text-center">
                       <div className="px-1">
                         <p className="text-xs font-bold text-slate-900">
-                          {assessmentStats[assessment.id]?.completed || 0} / {assessmentStats[assessment.id]?.assigned || 0}
+                          {statsLoading && !assessmentStats[assessment.id] ? "…" : `${assessmentStats[assessment.id]?.completed || 0} / ${assessmentStats[assessment.id]?.assigned || 0}`}
                         </p>
                         <p className="text-[9px] font-medium text-slate-500">complete</p>
                       </div>
                       <div className="px-1">
                         <p className="text-xs font-bold text-slate-900">
-                          {assessmentStats[assessment.id]?.average ?? "—"}{assessmentStats[assessment.id]?.average !== null && assessmentStats[assessment.id]?.average !== undefined ? "%" : ""}
+                          {statsLoading && !assessmentStats[assessment.id] ? "…" : <>{assessmentStats[assessment.id]?.average ?? "—"}{assessmentStats[assessment.id]?.average !== null && assessmentStats[assessment.id]?.average !== undefined ? "%" : ""}</>}
                         </p>
                         <p className="text-[9px] font-medium text-slate-500">average</p>
                       </div>
