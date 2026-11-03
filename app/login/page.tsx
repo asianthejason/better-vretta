@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 import TeacherPrice from "./TeacherPrice";
-import { type TeacherPlan } from "@/lib/teacherPlans";
+import { TEACHER_PLANS, type TeacherPlan } from "@/lib/teacherPlans";
 import TeacherSignup from "@/app/teacher/signup/page";
 import SignupCard, { type SignupCardHandle } from "./SignupCard";
 import { clearPendingSignup, readPendingSignup, savePendingSignup } from "@/lib/pendingSignup";
@@ -17,7 +17,7 @@ export default function LoginPage() {
   const [role, setRole] = useState<"teacher" | "student">("student");
   const [plan, setPlan] = useState<TeacherPlan>("basic");
   const [coupon, setCoupon] = useState("");
-  const [amount, setAmount] = useState(6000);
+  const [amount, setAmount] = useState<number>(TEACHER_PLANS.basic.annualAmount);
   const [cardComplete, setCardComplete] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");

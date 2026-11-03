@@ -13,7 +13,7 @@ export default function TeacherSignup() {
   const [busy, setBusy] = useState(false);
   const [plan, setPlan] = useState<TeacherPlan>("basic");
   const [coupon, setCoupon] = useState("");
-  const [amount, setAmount] = useState(6000);
+  const [amount, setAmount] = useState<number>(TEACHER_PLANS.basic.annualAmount);
   const [error, setError] = useState("");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [canceled, setCanceled] = useState(false);

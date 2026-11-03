@@ -103,8 +103,8 @@ test("renewals extend paid access, failed invoices do not, and cancellation sync
   const prototype = Object.getPrototypeOf(new Stripe("sk_test_placeholder").subscriptions);
   t.mock.method(prototype, "retrieve", async () => ({
     metadata: { purpose: "teacher_signup", user_id: "user-1", plan: "basic" }, status,
-    items: { data: [{ quantity: 1, current_period_end: 2000000000, price: { currency: "cad", unit_amount: 6000, recurring: { interval: "year", interval_count: 1 } } }] },
-    latest_invoice: { status: invoicePaid ? "paid" : "open", amount_paid: invoicePaid ? 6000 : 0, currency: "cad" },
+    items: { data: [{ quantity: 1, current_period_end: 2000000000, price: { currency: "cad", unit_amount: 999900, recurring: { interval: "year", interval_count: 1 } } }] },
+    latest_invoice: { status: invoicePaid ? "paid" : "open", amount_paid: invoicePaid ? 999900 : 0, currency: "cad" },
     cancel_at_period_end: status === "canceled", customer: "cus_test",
   }));
   globalThis.fetch = async (input, init) => {
@@ -153,7 +153,7 @@ test("paid signup returns an embedded form secret, reuses it, and expires it for
     assert.equal(params.redirect_on_completion, expectedUi === "embedded_page" ? "never" : undefined);
     assert.equal(params.success_url, undefined);
     assert.equal(params.cancel_url, undefined);
-    assert.equal(params.line_items?.[0].price_data?.unit_amount, 6000);
+    assert.equal(params.line_items?.[0].price_data?.unit_amount, 999900);
     assert.equal(params.line_items?.[0].price_data?.currency, "cad");
     return { id: "cs_embedded", client_secret: "cs_embedded_secret_example" };
   });

@@ -6,9 +6,9 @@ import Stripe from "stripe";
 import { teacherQuote, isPaidTeacherSession } from "../lib/teacherPricing";
 
 test("annual teacher plans and coupon pricing are enforced server-side", () => {
-  assert.deepEqual(teacherQuote(""), { amount: 6000, currency: "cad", plan: "basic" });
+  assert.deepEqual(teacherQuote(""), { amount: 999900, currency: "cad", plan: "basic" });
   assert.deepEqual(teacherQuote(" WebberTeam "), { amount: 0, currency: "cad", plan: "unlimited" });
-  assert.deepEqual(teacherQuote("", "unlimited"), { amount: 10000, currency: "cad", plan: "unlimited" });
+  assert.deepEqual(teacherQuote("", "unlimited"), { amount: 9999900, currency: "cad", plan: "unlimited" });
   assert.throws(() => teacherQuote("", "forged"));
   for (const invalid of ["free", "webberteam1", 0, null, {}, "x".repeat(101)]) {
     assert.throws(() => teacherQuote(invalid));
@@ -16,7 +16,7 @@ test("annual teacher plans and coupon pricing are enforced server-side", () => {
 });
 
 test("fulfillment rejects unpaid, wrong-price, wrong-currency, or misbound sessions", () => {
-  const valid = { status: "complete", payment_status: "paid", mode: "subscription", amount_total: 6000,
+  const valid = { status: "complete", payment_status: "paid", mode: "subscription", amount_total: 999900,
     currency: "cad", client_reference_id: "user-1", metadata: { purpose: "teacher_signup", user_id: "user-1", plan: "basic" } };
   assert.equal(isPaidTeacherSession(valid), true);
   for (const change of [

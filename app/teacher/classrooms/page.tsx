@@ -101,6 +101,18 @@ export default function ClassroomsPage() {
     setClasses((current) => [...current, data]);
     setSelected(data.id);
     setName("");
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session) {
+      const response = await fetch("/api/classrooms/default-assessment", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${session.access_token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ classroomId: data.id }),
+      });
+      if (!response.ok) {
+        const result = await response.json().catch(() => null) as { error?: string } | null;
+        alert(`The class was created, but its example assessment could not be added: ${result?.error || "Unknown error"}`);
+      }
+    }
   }
 
   async function addStudent() {
@@ -338,6 +350,7 @@ export default function ClassroomsPage() {
                           value={teacherEmail}
                           onChange={setTeacherEmail}
                           onSubmit={() => void addTeacher()}
+                          disabledAccountIds={new Set(teachers.map((teacher) => teacher.teacher_id))}
                         />
                         <button
                           type="button"

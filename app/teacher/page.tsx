@@ -47,6 +47,9 @@ export default function TeacherPage() {
   const [lockedEmail, setLockedEmail] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [movingAssessmentId, setMovingAssessmentId] = useState<string | null>(null);
+  const [duplicateSource, setDuplicateSource] = useState<Assessment | null>(null);
+  const [duplicateClassroomId, setDuplicateClassroomId] = useState("");
+  const [duplicateBusy, setDuplicateBusy] = useState(false);
   const [publishingAssessmentId, setPublishingAssessmentId] = useState<string | null>(null);
   const [assessmentStats, setAssessmentStats] = useState<Record<string, AssessmentStats>>({});
   const [copiedClassroomId, setCopiedClassroomId] = useState<string | null>(null);
@@ -85,9 +88,27 @@ export default function TeacherPage() {
       return;
     }
 
-    setAssessments(data || []);
-    setClassrooms(classroomData || []);
-    await loadAssessmentStats(data || [], classroomData || []);
+    let assessmentData = data || [];
+    const teacherClassrooms = classroomData || [];
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session && teacherClassrooms.length) {
+      const results = await Promise.all(teacherClassrooms.map(async (classroom) => {
+        const response = await fetch("/api/classrooms/default-assessment", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${session.access_token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ classroomId: classroom.id }),
+        });
+        return response.ok ? await response.json() as { created?: boolean } : null;
+      }));
+      if (results.some((result) => result?.created)) {
+        const { data: refreshedAssessments } = await supabase.from("assessments").select("*").order("created_at", { ascending: false });
+        assessmentData = refreshedAssessments || assessmentData;
+      }
+    }
+
+    setAssessments(assessmentData);
+    setClassrooms(teacherClassrooms);
+    await loadAssessmentStats(assessmentData, teacherClassrooms);
     if (classroomData?.[0]) setSelectedClassroomId((current) => current || classroomData[0].id);
     setLoading(false);
   }
@@ -257,6 +278,29 @@ export default function TeacherPage() {
       )
     );
     setMovingAssessmentId(null);
+  }
+
+  function openDuplicate(assessment: Assessment) {
+    setDuplicateSource(assessment);
+    setDuplicateClassroomId(assessment.classroom_id || selectedClassroomId || classrooms[0]?.id || "");
+  }
+
+  async function duplicateAssessment() {
+    if (!duplicateSource || !duplicateClassroomId) return;
+    setDuplicateBusy(true);
+    const { error } = await supabase.rpc("duplicate_assessment", {
+      source_assessment: duplicateSource.id,
+      target_classroom: duplicateClassroomId,
+    });
+    if (error) {
+      alert(error.message);
+      setDuplicateBusy(false);
+      return;
+    }
+    setSelectedClassroomId(duplicateClassroomId);
+    setDuplicateSource(null);
+    setDuplicateBusy(false);
+    await loadTeacherData();
   }
 
   async function signOut() {
@@ -500,6 +544,14 @@ export default function TeacherPage() {
                       </Link>
 
                       <button
+                        type="button"
+                        onClick={() => openDuplicate(assessment)}
+                        className="rounded-md border border-indigo-200 bg-indigo-50 px-2 py-1.5 text-[10px] font-semibold text-indigo-700 transition hover:bg-indigo-100"
+                      >
+                        Duplicate
+                      </button>
+
+                      <button
                         onClick={() => deleteAssessment(assessment)}
                         aria-label={`Delete ${assessment.title}`}
                         className="rounded-md border border-slate-200 px-2 py-1.5 text-[10px] font-semibold text-slate-400 transition hover:border-red-200 hover:bg-red-50 hover:text-red-600"
@@ -514,6 +566,33 @@ export default function TeacherPage() {
           )}
         </section>
       </div>
+      {duplicateSource && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/50 p-4" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !duplicateBusy) setDuplicateSource(null);
+        }}>
+          <section role="dialog" aria-modal="true" aria-labelledby="duplicate-assessment-title" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+            <h2 id="duplicate-assessment-title" className="text-xl font-black text-slate-950">Duplicate assessment</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              Create an unpublished copy of <span className="font-bold text-slate-900">{duplicateSource.title}</span>, including all questions.
+            </p>
+            <label className="mt-5 block">
+              <span className="text-sm font-bold text-slate-800">Save copy to</span>
+              <select
+                value={duplicateClassroomId}
+                onChange={(event) => setDuplicateClassroomId(event.target.value)}
+                disabled={duplicateBusy}
+                className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm font-semibold text-slate-900 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100 disabled:bg-slate-100"
+              >
+                {classrooms.map((classroom) => <option key={classroom.id} value={classroom.id}>{classroom.name}</option>)}
+              </select>
+            </label>
+            <div className="mt-6 flex justify-end gap-2">
+              <button type="button" onClick={() => setDuplicateSource(null)} disabled={duplicateBusy} className="rounded-xl border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50">Cancel</button>
+              <button type="button" onClick={() => void duplicateAssessment()} disabled={duplicateBusy || !duplicateClassroomId} className="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-blue-700 disabled:cursor-wait disabled:opacity-50">{duplicateBusy ? "Duplicating…" : "Duplicate"}</button>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   );
 }

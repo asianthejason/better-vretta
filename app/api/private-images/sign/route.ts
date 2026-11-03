@@ -45,13 +45,23 @@ export async function POST(request: Request) {
     if (profile?.role === "teacher") {
       const [{ data: libraryRows }, { data: assessments }] = await Promise.all([
         admin.from("account_images").select("image_path").eq("owner_id", authData.user.id).in("image_path", paths),
-        admin.from("assessments").select("id").eq("teacher_id", authData.user.id),
+        admin.from("assessments").select("id,formula_sheet").eq("teacher_id", authData.user.id),
       ]);
       (libraryRows || []).forEach((row) => authorized.add(row.image_path));
       const ownedAssessmentIds = new Set((assessments || []).map((assessment) => assessment.id));
       paths.forEach((path) => {
         const assessmentId = path.split("/", 1)[0];
         if (ownedAssessmentIds.has(assessmentId)) authorized.add(path);
+      });
+      const { data: ownedQuestions } = ownedAssessmentIds.size
+        ? await admin.from("questions").select("question_data").in("assessment_id", [...ownedAssessmentIds])
+        : { data: [] as { question_data: unknown }[] };
+      const referencedPaths = collectPrivateImagePaths([
+        ...(ownedQuestions || []),
+        ...(assessments || []).map((assessment) => assessment.formula_sheet),
+      ]);
+      paths.forEach((path) => {
+        if (referencedPaths.has(path)) authorized.add(path);
       });
     } else if (profile?.role === "student") {
       // Question RLS already limits this client to assessments currently
