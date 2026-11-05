@@ -82,9 +82,9 @@ export default function StudentDashboard() {
   if (lockedEmail) return <LockedDashboard role="student" email={lockedEmail} />;
 
   return <main className="min-h-screen bg-white text-slate-900">
-    <header className="border-b border-slate-200"><div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-      <Link href="/" className="flex items-center gap-3 font-bold"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-600 text-white">J</span>Cloneretta</Link>
-      <div className="flex items-center gap-2"><Link href="/student/dashboard" aria-current="page" className="rounded-lg bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700">Student Dashboard</Link><Link href="/profile" className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">Profile</Link><button onClick={() => void signOut()} className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-500 hover:bg-slate-100">Sign out</button></div>
+    <header className="border-b border-slate-200"><div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6">
+      <Link href="/" className="flex items-center gap-3 font-bold">Cloneretta</Link>
+      <div className="flex max-w-full items-center gap-1 overflow-x-auto"><Link href="/student/dashboard" aria-current="page" className="whitespace-nowrap rounded-lg bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700">Student Dashboard</Link><Link href="/profile" className="whitespace-nowrap rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">Profile</Link><button onClick={() => void signOut()} className="whitespace-nowrap rounded-lg px-3 py-2 text-sm font-semibold text-slate-500 hover:bg-slate-100">Sign out</button></div>
     </div></header>
 
     <div className="mx-auto max-w-6xl px-6 py-12">

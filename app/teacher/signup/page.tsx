@@ -116,7 +116,7 @@ export default function TeacherSignup() {
 
   return <main className="flex min-h-screen items-center justify-center bg-white px-6 py-12 text-slate-900">
     <div className="w-full max-w-2xl">
-      <Link href="/" className="flex items-center gap-3 font-bold tracking-tight"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 text-white">J</span>Cloneretta</Link>
+      <Link href="/" className="flex items-center gap-3 font-bold tracking-tight">Cloneretta</Link>
       <h1 className="mt-12 text-4xl font-bold tracking-tight">Create your teacher account.</h1>
       <p className="mt-3 leading-7 text-slate-500">{sessionId ? "Confirming your payment and finishing your teacher account." : "Step 2 of 2 — payment. Enter your card details below to finish signup, or apply a coupon."}</p>
       <div className="mt-8 space-y-5 rounded-2xl border border-slate-200 p-6 shadow-sm">

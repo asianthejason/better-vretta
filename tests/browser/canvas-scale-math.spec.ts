@@ -25,8 +25,8 @@ for (const height of [56.25, 76, 120]) test(`${height} percent canvases scale bo
     sizes.push({boxHeight:box.height/bounds.width, instructionY:(instruction.y-bounds.y)/bounds.width});
     const fraction=canvas.locator('msqrt mfrac').first();
     await expect(fraction).toBeVisible();
-    const numerator=(await fraction.locator('mtext').nth(0).boundingBox())!;
-    const denominator=(await fraction.locator('mtext').nth(1).boundingBox())!;
+    const numerator=(await fraction.locator(':scope > :first-child').boundingBox())!;
+    const denominator=(await fraction.locator(':scope > :last-child').boundingBox())!;
     expect(denominator.y).toBeGreaterThan(numerator.y+numerator.height/2);
   }
   for (const size of sizes.slice(1)) {

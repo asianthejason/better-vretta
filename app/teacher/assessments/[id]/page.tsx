@@ -6,6 +6,7 @@ import DragDropQuestion from "@/app/student/[id]/DragDropQuestion";
 
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -28,7 +29,7 @@ import CanvasDropdownField from "@/app/components/CanvasDropdownField";
 import LocationCanvasEditor from "./LocationCanvasEditor";
 import { createDefaultDropdownData, dropdownHasCompleteAnswerKey, getDropdownEntryOptions, makeDropdownId, normalizeDropdownData, type DropdownEntry, type DropdownQuestionData } from "@/lib/dropdownQuestion";
 import { createDefaultFillBlankData, createFillBlankEntry, getFillBlankBounds, getFillBlankPromptText, normalizeFillBlankData, type FillBlankData, type FillBlankEntry } from "@/lib/fillBlank";
-import { createCategoryCanvasData, asLocationDragDropData, createDefaultDragDropData, createLocationDragDropData, getInlineBlankCount, getInlineBlankSegments, getInlineChoiceBoxSize, getDragDropItemHtml, getLocationBoxSize, getSequenceTargetCount, makeDragDropId, normalizeCanvasHeight, normalizeDragDropData, type DragDropData } from "@/lib/dragDrop";
+import { createCategoryCanvasData, asLocationDragDropData, createDefaultDragDropData, createLocationDragDropData, getInlineBlankCount, getInlineBlankSegments, getInlineChoiceBoxSize, getDragDropItemHtml, getDragDropZoneHtml, getLocationBoxSize, getSequenceTargetCount, makeDragDropId, normalizeCanvasHeight, normalizeDragDropData, type DragDropData } from "@/lib/dragDrop";
 import { getMultipleChoiceCorrectAnswers, getMultipleChoiceSelectionMode, type MultipleChoiceSelectionMode } from "@/lib/multipleChoice";
 import { DEFAULT_INTERACTION, createDefaultQuestionCanvas, normalizeQuestionCanvas, questionCanvasToComposition, type QuestionCanvasData } from "@/lib/questionCanvas";
 import { createPrivateImageUrl, hydratePrivateImageUrls } from "@/lib/privateImageUrls";
@@ -51,8 +52,6 @@ const TEMPLATE_QUESTION_TYPES: { type: QuestionType; label: string; description:
   { type: "dropdown", label: "Dropdown", description: "A starter canvas with an answer menu." },
   { type: "fill-in-the-blank", label: "Fill in the Blank", description: "A starter layout for typed student answers." },
 ];
-const BUILT_IN_TEMPLATE_ASSESSMENT_ID = "9172cd6c-e319-40a3-821e-84a6c365508b";
-const BUILT_IN_TEMPLATE_QUESTION_ORDERS = [1, 2, 3, 4, 5, 7, 8, 11, 12, 13, 16, 18, 19, 21, 22];
 const CUSTOM_TEMPLATE_PREFIX = "__question_template__:";
 
 type OverlayAnswerMode = "text-entry" | "drag-drop-text" | "drag-drop-image";
@@ -416,7 +415,7 @@ function SequencePreview({ data, itemPreviewUrls = {} }: { data: DragDropData; i
 
 function LocationPreview({ data, itemPreviewUrls = {} }: { data: DragDropData; itemPreviewUrls?: Record<string, string> }) {
   const previewItems = data.items.map((item) => ({ ...item, imageUrl: itemPreviewUrls[item.id] || item.imageUrl }));
-  if (data.preset === "category-canvas") return <DragDropQuestion data={{ ...data, items: previewItems }} placements={{}} onChange={() => {}} />;
+  if (data.preset === "category-canvas") return <DragDropQuestion data={{ ...data, items: previewItems }} placements={{}} onChange={() => {}} shuffleChoices={false} />;
   const boxSize = getLocationBoxSize(previewItems, data.choiceSize);
   const boxCanvasStyle = { width: `${boxSize.width / 10}cqw`, height: `${boxSize.height / 10}cqw` };
   const canvasHeight = normalizeCanvasHeight(data.canvasHeight);
@@ -621,6 +620,39 @@ function SavedQuestionStudentPreview({
       </div>
     </div>
   );
+}
+
+function TemplateQuestionThumbnail({ question, index }: { question: Question; index: number }) {
+  const frameRef = useRef<HTMLSpanElement>(null);
+  const previewRef = useRef<HTMLSpanElement>(null);
+  const [scale, setScale] = useState(0.3);
+
+  useLayoutEffect(() => {
+    const frame = frameRef.current;
+    const preview = previewRef.current;
+    if (!frame || !preview) return;
+    const resize = () => {
+      const previewHeight = Math.max(preview.scrollHeight, 1);
+      const next = Math.min(frame.clientWidth / 1000, frame.clientHeight / previewHeight);
+      setScale((current) => Math.abs(current - next) < 0.001 ? current : next);
+    };
+    resize();
+    const observer = new ResizeObserver(resize);
+    observer.observe(frame);
+    observer.observe(preview);
+    return () => observer.disconnect();
+  }, [question]);
+
+  return <span ref={frameRef} data-template-thumbnail className="pointer-events-none relative block h-full overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+    <span
+      ref={previewRef}
+      data-template-thumbnail-preview
+      className="absolute left-1/2 top-1/2 block w-[1000px] origin-center"
+      style={{ transform: `translate(-50%, -50%) scale(${scale})` }}
+    >
+      <SavedQuestionStudentPreview question={question} index={index} embedded />
+    </span>
+  </span>;
 }
 
 export default function AssessmentEditorPage({
@@ -1241,15 +1273,17 @@ export default function AssessmentEditorPage({
       return;
     }
 
-    const { data: templateQuestionData, error: templateQuestionError } = await supabase
-      .from("questions")
-      .select("*")
-      .eq("assessment_id", BUILT_IN_TEMPLATE_ASSESSMENT_ID)
-      .in("question_order", BUILT_IN_TEMPLATE_QUESTION_ORDERS)
-      .order("question_order", { ascending: true });
-
-    if (templateQuestionError) {
-      console.error("Could not load built-in question templates:", templateQuestionError.message);
+    let sourceTemplates: QuestionTemplate[] = [];
+    try {
+      const token = getCachedAccessToken();
+      if (token) {
+        const response = await fetch("/api/question-templates", { headers: { Authorization: `Bearer ${token}` } });
+        const result = await response.json() as { templates?: QuestionTemplate[]; error?: string };
+        if (!response.ok) throw new Error(result.error || "Could not load built-in question templates.");
+        sourceTemplates = result.templates || [];
+      }
+    } catch (error) {
+      console.error("Could not load built-in question templates:", error);
     }
 
     const { data: referenceData, error: referenceError } = await supabase
@@ -1284,12 +1318,7 @@ export default function AssessmentEditorPage({
       if (!stored?.question?.question_type || !stored.question.question_data) return [];
       return [{ id: reference.id, name: reference.name.slice(CUSTOM_TEMPLATE_PREFIX.length), kind: "custom" as const, question: asSingleViewQuestion(stored.question) }];
     });
-    const sourceTemplates = ((templateQuestionData || []) as Question[]).map((question) => ({
-      id: `built-in-${question.id}`,
-      name: `Question ${question.question_order}`,
-      kind: "built-in" as const,
-      question: asSingleViewQuestion(question),
-    }));
+    sourceTemplates = sourceTemplates.map((template) => ({ ...template, question: asSingleViewQuestion(template.question) }));
 
     let hydrated = {
       assessment: assessmentData as Assessment,
@@ -1883,8 +1912,12 @@ export default function AssessmentEditorPage({
         }
         const itemIds = new Set(dragDropData.items.map((item) => item.id));
         const assignedItemIds = dragDropData.zones.flatMap((zone) => zone.correctItemIds);
-        if (new Set(assignedItemIds).size !== assignedItemIds.length || assignedItemIds.some((itemId) => !itemIds.has(itemId)) || dragDropData.items.some((item) => !assignedItemIds.includes(item.id))) {
-          reportError("Assign every draggable item to its correct target.");
+        if (assignedItemIds.length < 1) {
+          reportError("Assign at least one draggable item to its correct target.");
+          return false;
+        }
+        if (new Set(assignedItemIds).size !== assignedItemIds.length || assignedItemIds.some((itemId) => !itemIds.has(itemId))) {
+          reportError("Each assigned draggable item must use one valid target.");
           return false;
         }
       }
@@ -3664,7 +3697,7 @@ export default function AssessmentEditorPage({
             ? <SequencePreview data={dragDropData} itemPreviewUrls={dragDropItemPreviewUrls} />
             : dragDropData.preset === "inline"
               ? <InlineBlankPreview data={dragDropData} itemPreviewUrls={dragDropItemPreviewUrls} />
-              : <div className="grid gap-[0.8cqw] text-[1.5cqw]">{dragDropData.zones.map((zone, index) => <div key={zone.id} className="min-h-[5cqw] border-2 border-dashed border-blue-300 bg-blue-50/50 p-[1cqw]">{zone.label || `Target ${index + 1}`}</div>)}</div>;
+              : <div className="grid gap-[0.8cqw] text-[1.5cqw]">{dragDropData.zones.map((zone, index) => <div key={zone.id} className="min-h-[5cqw] border-2 border-dashed border-blue-300 bg-blue-50/50 p-[1cqw]">{zone.label ? <div className="rich-text-content" dangerouslySetInnerHTML={{ __html: getDragDropZoneHtml(zone) }} /> : `Target ${index + 1}`}</div>)}</div>;
   const multipleChoiceCanvasLayout = questionCanvas.choiceLayout || { grouped: true, direction: "vertical" as const, presentation: "content" as const, x: 8, y: 35, positions: [] };
   const questionValidationError = questionBuilderStep === 4 ? getQuestionValidationError() : "Finish the question setup first.";
   const saveDisabledReason = uploadingImage ? "Wait for the image upload to finish." : questionValidationError;
@@ -3743,7 +3776,6 @@ export default function AssessmentEditorPage({
       <nav className="border-b border-slate-200 bg-white text-slate-900" aria-label="Global navigation">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <Link href="/" className="flex items-center gap-3 font-bold tracking-tight text-slate-950">
-            <span className="grid size-9 place-items-center rounded-xl bg-blue-600 text-white shadow-sm shadow-blue-200">J</span>
             Cloneretta
           </Link>
           <div className="flex items-center gap-2">
@@ -4066,9 +4098,7 @@ export default function AssessmentEditorPage({
                         onClick={() => chooseQuestionTemplate(template)}
                         className="group aspect-[16/10] overflow-hidden rounded-2xl border border-slate-200 bg-slate-100 p-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-blue-400 hover:shadow-md"
                       >
-                        <span className="pointer-events-none block h-full overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-                          <SavedQuestionStudentPreview question={template.question} index={template.question.question_order - 1} embedded />
-                        </span>
+                        <TemplateQuestionThumbnail question={template.question} index={template.question.question_order - 1} />
                       </button>
                     ))}
                     {(templateQuestionType === "custom" ? customTemplates : builtInTemplates.filter((template) => template.question.question_type === templateQuestionType)).length === 0 && (

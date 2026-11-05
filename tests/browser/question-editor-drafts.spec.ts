@@ -37,6 +37,14 @@ async function open(page: Page) {
   await page.goto("/");
   const stylesheets = await page.locator('link[rel="stylesheet"]').evaluateAll(links => links.map(link => (link as HTMLLinkElement).href));
   await page.route("**/__draft-editor-test", route => route.fulfill({ contentType: "text/html", body: '<div id="root"></div>' }));
+  await page.route("**/api/question-templates", async route => {
+    if (route.request().method() !== "GET") return route.fallback();
+    const questions = await page.evaluate(() => JSON.parse(localStorage.getItem("questions") || "[]"));
+    const templates = questions.filter((question: { assessment_id: string }) => question.assessment_id === "9172cd6c-e319-40a3-821e-84a6c365508b").map((question: { id: string; question_order: number }) => ({
+      id: `built-in-${question.id}`, name: `Question ${question.question_order}`, kind: "built-in", question,
+    }));
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ templates }) });
+  });
   await page.route("**/api/question-drafts**", async route => {
     if (route.request().method() === "POST") {
       const record = route.request().postDataJSON();
@@ -73,6 +81,10 @@ test("add question offers blank and template starting points", async ({ page }) 
   await page.getByRole("button", { name: "Use a template", exact: true }).click();
   await expect(page.getByRole("tab", { name: "Multiple Choice" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("tab", { name: "Custom Templates" })).toBeVisible();
+  const thumbnailPreview = page.locator("[data-template-thumbnail-preview]").first();
+  await expect(thumbnailPreview).toBeVisible();
+  expect(await thumbnailPreview.evaluate((node) => (node as HTMLElement).offsetWidth)).toBe(1000);
+  expect(await thumbnailPreview.evaluate((node) => getComputedStyle(node).transform)).not.toBe("none");
   await page.getByRole("button", { name: "Use template Question 1", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Template preview" })).toBeAttached();
   await expect(page.getByRole("button", { name: "Use template", exact: true })).toBeVisible();

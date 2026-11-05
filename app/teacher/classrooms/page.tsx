@@ -204,14 +204,11 @@ export default function ClassroomsPage() {
   return (
     <main className="min-h-screen bg-white text-slate-950">
       <nav className="border-b border-slate-200 bg-white" aria-label="Global navigation">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6">
           <Link href="/" className="flex items-center gap-3 font-bold tracking-tight text-slate-950">
-            <span className="grid size-9 place-items-center rounded-xl bg-blue-600 text-white shadow-sm shadow-blue-200">
-              J
-            </span>
             Cloneretta
           </Link>
-          <div className="flex items-center gap-2">
+          <div className="flex max-w-full items-center gap-1 overflow-x-auto [&>*]:shrink-0">
             <Link
               href="/teacher"
               className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"

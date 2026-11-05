@@ -1,7 +1,5 @@
 "use client";
 
-import { useLayoutEffect, useRef, useState } from "react";
-
 type CanvasDropdownFieldProps = {
   ariaLabel: string;
   canvas?: boolean;
@@ -12,18 +10,11 @@ type CanvasDropdownFieldProps = {
 };
 
 export default function CanvasDropdownField({ ariaLabel, options, value = "", disabled = false, canvas = true, onChange }: CanvasDropdownFieldProps) {
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const [widthEm, setWidthEm] = useState<number>();
-  useLayoutEffect(() => {
-    const node = wrapperRef.current;
-    if (!node) return;
-    const context = document.createElement("canvas").getContext("2d");
-    if (!context) return;
-    context.font = `500 100px ${getComputedStyle(node).fontFamily}`;
-    setWidthEm(Math.max(4, ...options.map(option => context.measureText(option).width / 100 + 3.5)));
-  }, [options]);
+  // `em` keeps the control proportional to its container-query font size.
+  // The hidden grid labels below still reserve room for unusually wide glyphs.
+  const widthEm = Math.max(4, ...options.map((option) => option.length * 0.62 + 3.5));
   return (
-    <div ref={wrapperRef} className="relative h-full w-max" style={{ fontSize: canvas ? "1.5cqw" : "1rem", display: "inline-grid", minWidth: "4em", width: widthEm ? `${widthEm}em` : undefined }}>
+    <div className="relative h-full" style={{ fontSize: canvas ? "1.5cqw" : "1rem", display: "inline-grid", minWidth: "4em", width: `${widthEm}em` }}>
       {(options.length ? options : [""]).map((option, index) => <span key={index} aria-hidden="true" style={{ gridArea: "1 / 1", minWidth: 0, overflow: "hidden", visibility: "hidden", whiteSpace: "pre", paddingLeft: "0.65em", paddingRight: "2.5em", border: "0.13em solid transparent", fontWeight: 500 }}>{option}</span>)}
       <select
         aria-label={ariaLabel}

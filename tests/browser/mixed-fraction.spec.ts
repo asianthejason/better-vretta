@@ -11,11 +11,11 @@ test('fraction control adds a whole number and preserves the fraction when toggl
   await page.getByRole('textbox').fill('3');
   await page.getByRole('button', { name:'numerator', exact:true }).click();
   await page.getByRole('textbox').fill('1');
-  await page.getByRole('button', { name:'denominator', exact:true }).click();
+  await page.getByRole('button', { name:'denominator', exact:true }).last().click();
   await page.getByRole('textbox').fill('2');
   await expect(page.getByRole('button', { name:'Insert notation' })).toBeEnabled();
   const preview=page.getByLabel('Math notation preview');
-  await expect(preview.locator('mtext')).toHaveText(['3','1','2']);
+  await expect(preview.locator('mtext, mn, mi')).toHaveText(['3','1','2']);
   await page.getByRole('checkbox', { name:'Mixed fraction' }).uncheck();
-  await expect(preview.locator('mtext')).toHaveText(['1','2']);
+  await expect(preview.locator('mtext, mn, mi')).toHaveText(['1','2']);
 });

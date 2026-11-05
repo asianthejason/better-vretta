@@ -995,7 +995,6 @@ export default function ResultsPage({
       <nav className="border-b border-slate-200 bg-white text-slate-900" aria-label="Global navigation">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <Link href="/" className="flex items-center gap-3 font-bold tracking-tight text-slate-950">
-            <span className="grid size-9 place-items-center rounded-xl bg-blue-600 text-white shadow-sm shadow-blue-200">J</span>
             Cloneretta
           </Link>
           <div className="flex items-center gap-2">

@@ -6,6 +6,7 @@ test.beforeAll(async () => {
   const result = await build({
     stdin: {
       contents: `import React,{useMemo,useState} from "react";import{createRoot}from"react-dom/client";import{useQuestionDrafts}from"./app/teacher/assessments/[id]/useQuestionDrafts";
+      const nativeFetch=window.fetch.bind(window);window.fetch=async(input,init={})=>{const url=String(input);if(!url.includes("/api/question-drafts"))return nativeFetch(input,init);if(!init.method||init.method==="GET")return new Response(JSON.stringify({drafts:JSON.parse(localStorage.getItem("cloud-drafts")||"[]")}),{status:200,headers:{"Content-Type":"application/json"}});window.__saveStarted=(window.__saveStarted||0)+1;await new Promise(resolve=>setTimeout(resolve,window.__saveDelay||0));if(window.__offline)return new Response(JSON.stringify({error:"Offline"}),{status:503,headers:{"Content-Type":"application/json"}});const row=JSON.parse(String(init.body));const rows=JSON.parse(localStorage.getItem("cloud-drafts")||"[]");localStorage.setItem("cloud-drafts",JSON.stringify([...rows.filter(current=>current.id!==row.id),row]));return new Response("{}",{status:200,headers:{"Content-Type":"application/json"}})};
       function App(){
         const[text,setText]=useState("");const[file,setFile]=useState(null);const[preview,setPreview]=useState("");const[open,setOpen]=useState(false);
         const snapshot=useMemo(()=>({text,file,preview}),[text,file,preview]);
@@ -26,7 +27,7 @@ test.beforeAll(async () => {
       setup(builder) {
         builder.onResolve({ filter: /^@\/lib\/supabaseClient$/ }, args => ({ path: args.path, namespace: "draft-backend" }));
         builder.onLoad({ filter: /.*/, namespace: "draft-backend" }, () => ({
-          contents: `export const supabase={from(){return{
+          contents: `export const getCachedAccessToken=()=>"test-token";export const supabase={from(){return{
             select(){const result={eq(){return result},then(resolve){resolve({data:JSON.parse(localStorage.getItem("cloud-drafts")||"[]")})}};return result},
             async upsert(row){window.__saveStarted=(window.__saveStarted||0)+1;await new Promise(r=>setTimeout(r,window.__saveDelay||0));
               if(window.__offline)return{error:{message:"Offline"}};

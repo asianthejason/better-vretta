@@ -19,6 +19,7 @@ export type DragDropItem = {
 export type DragDropZone = {
   id: string;
   label: string;
+  labelHtml?: string;
   correctItemIds: string[];
   capacity: number | null;
   orderMatters?: boolean;
@@ -297,6 +298,11 @@ export function getCanvasTrackSizes(count: number, saved?: number[]) {
 export function getDragDropItemHtml(item: Pick<DragDropItem, "content" | "contentHtml">) {
   if (item.contentHtml) return normalizeFractionParentheses(item.contentHtml);
   return item.content.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("\n", "<br>");
+}
+
+export function getDragDropZoneHtml(zone: Pick<DragDropZone, "label" | "labelHtml">) {
+  if (zone.labelHtml) return normalizeFractionParentheses(zone.labelHtml);
+  return zone.label.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("\n", "<br>");
 }
 
 export function getLocationBoxSize(items: DragDropItem[], customSize?: DragDropBoxSize): DragDropBoxSize {
@@ -594,8 +600,7 @@ export function isDragDropAnswered(data: DragDropData, placements: DragDropPlace
     return Array.from({ length: getSequenceTargetCount(data) }, (_, index) => answers[index]).every(Boolean);
   }
   if (data.preset === "category-canvas") {
-    const placed = data.zones.flatMap(zone => placements[zone.id] || []);
-    return data.items.length > 0 && data.items.every(item => placed.includes(item.id));
+    return data.zones.some((zone) => (placements[zone.id] || []).some(Boolean));
   }
   // Completion only means the student supplied enough responses. Correctness is
   // evaluated separately by gradeDragDrop; a wrong choice must still count as an

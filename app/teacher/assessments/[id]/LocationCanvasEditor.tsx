@@ -1,9 +1,9 @@
 "use client";
 
-import { useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import { useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import LocationCanvasElementContent from "@/app/components/LocationCanvasElementContent";
 import NumberLineSettings from "./NumberLineSettings";
-import { ALGEBRA_TILE_OPTIONS, EMPTY_CANVAS_ALGEBRA_TILE_COUNTS, MAX_CANVAS_HEIGHT, MIN_CANVAS_HEIGHT, getCanvasAlgebraTile, getCanvasNumberLine, getCanvasShape, getCanvasTrackSizes, getDragDropItemHtml, getLocationBoxSize, getSingleLineChoiceBoxSize, getChoiceContentSizes, isEmptyChoice, makeDragDropId, normalizeCanvasHeight, type CanvasAlgebraTileCounts, type DragDropCanvasElement, type DragDropData, type DragDropZone } from "@/lib/dragDrop";
+import { ALGEBRA_TILE_OPTIONS, EMPTY_CANVAS_ALGEBRA_TILE_COUNTS, MAX_CANVAS_HEIGHT, MIN_CANVAS_HEIGHT, getCanvasAlgebraTile, getCanvasNumberLine, getCanvasShape, getCanvasTrackSizes, getDragDropItemHtml, getDragDropZoneHtml, getLocationBoxSize, getSingleLineChoiceBoxSize, getChoiceContentSizes, isEmptyChoice, makeDragDropId, normalizeCanvasHeight, type CanvasAlgebraTileCounts, type DragDropCanvasElement, type DragDropData, type DragDropZone } from "@/lib/dragDrop";
 import { buildMathExpressionHtml, createEmptyMathExpression, readMathExpressionTree, type MathExpressionNode } from "@/lib/mathExpressionTree";
 import CanvasInlineTextEditor from "./CanvasInlineTextEditor";
 import MathExpressionComposer from "./MathExpressionComposer";
@@ -114,7 +114,11 @@ export default function LocationCanvasEditor({ data, onChange: emitChange, uploa
   const undoStackRef = useRef<CanvasHistorySnapshot[]>([]);
   const redoStackRef = useRef<CanvasHistorySnapshot[]>([]);
   const historyGestureRef = useRef<CanvasHistorySnapshot | null>(null);
-  const [, setHistoryRevision] = useState(0);
+  const [historyAvailability, setHistoryAvailability] = useState({ canUndo: false, canRedo: false });
+  const refreshHistoryAvailability = () => setHistoryAvailability({
+    canUndo: undoStackRef.current.length > 0,
+    canRedo: redoStackRef.current.length > 0,
+  });
   const copyData = (value: DragDropData) => structuredClone(value);
   const captureHistorySnapshot = (): CanvasHistorySnapshot => ({
     data: copyData(data),
@@ -128,7 +132,7 @@ export default function LocationCanvasEditor({ data, onChange: emitChange, uploa
     if (!historyGestureRef.current) {
       undoStackRef.current.push(captureHistorySnapshot());
       redoStackRef.current = [];
-      setHistoryRevision((current) => current + 1);
+      refreshHistoryAvailability();
     }
     emitChange(value);
   };
@@ -138,14 +142,14 @@ export default function LocationCanvasEditor({ data, onChange: emitChange, uploa
     if (!previous) return;
     redoStackRef.current.push(captureHistorySnapshot());
     applyHistorySnapshot(previous);
-    setHistoryRevision((current) => current + 1);
+    refreshHistoryAvailability();
   };
   const redo = () => {
     const next = redoStackRef.current.pop();
     if (!next) return;
     undoStackRef.current.push(captureHistorySnapshot());
     applyHistorySnapshot(next);
-    setHistoryRevision((current) => current + 1);
+    refreshHistoryAvailability();
   };
   const resizeCanvasHeight = (requestedHeight: number | string) => {
     // Coordinates are percentages of height; convert them to preserve their
@@ -237,6 +241,18 @@ export default function LocationCanvasEditor({ data, onChange: emitChange, uploa
   const updateZone = (zoneId: string, patch: Partial<DragDropZone>) => updateZones(data.zones.map((zone) => zone.id === zoneId ? { ...zone, ...patch } : zone));
   const updateElements = (canvasElements: DragDropCanvasElement[]) => onChange({ ...data, canvasElements });
   const updateElement = (elementId: string, patch: Partial<DragDropCanvasElement>) => updateElements((data.canvasElements || []).map((element) => element.id === elementId ? { ...element, ...patch } : element));
+  const selectCanvasElement = (event: MouseEvent<HTMLDivElement>, element: DragDropCanvasElement) => {
+    event.stopPropagation();
+    if (gestureMovedRef.current) return;
+    setEditingZoneId(null);
+    setEditingElementId(element.id);
+    setEditingTextId(element.type === "text" && event.detail >= 2 ? element.id : null);
+    if (selectedElementIds.length <= 1) setSelectedElementIds([element.id]);
+    if (element.type !== "table") {
+      setTableSelection(null);
+      setEditingTableCell(null);
+    }
+  };
   const nudgeAsset = (event: KeyboardEvent<HTMLElement>) => {
     const directions: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
     const direction = directions[event.key];
@@ -919,7 +935,7 @@ export default function LocationCanvasEditor({ data, onChange: emitChange, uploa
       if (gestureMovedRef.current && JSON.stringify(historyGestureRef.current) !== JSON.stringify(captureHistorySnapshot())) {
         undoStackRef.current.push(historyGestureRef.current);
         redoStackRef.current = [];
-        setHistoryRevision((current) => current + 1);
+        refreshHistoryAvailability();
       }
       historyGestureRef.current = null;
     }
@@ -1109,6 +1125,19 @@ export default function LocationCanvasEditor({ data, onChange: emitChange, uploa
     setEditingExistingTableMath(false);
     setTableMathPanel(null);
   };
+  const toggleTableMathPanel = () => {
+    if (tableMathPanel !== "editable") {
+      tableEditingMathRef.current = null;
+      setEditingExistingTableMath(false);
+      setTableMathTree(createEmptyMathExpression());
+    }
+    setTableMathPanel(tableMathPanel === "editable" ? null : "editable");
+  };
+  const cancelTableMath = () => {
+    tableEditingMathRef.current = null;
+    setEditingExistingTableMath(false);
+    setTableMathPanel(null);
+  };
   const editTableMath = (math: Element, editor: HTMLElement) => {
     const tree = readMathExpressionTree(math);
     if (!tree) return;
@@ -1164,7 +1193,7 @@ export default function LocationCanvasEditor({ data, onChange: emitChange, uploa
     }}
   >
     <div className="flex items-center justify-between gap-2"><strong className="text-sm text-slate-950">Edit choice</strong><button type="button" onClick={() => setEditingItemId(null)} className="grid h-6 w-6 place-items-center rounded-full bg-slate-100 text-sm font-bold text-slate-700" aria-label="Close choice editor">×</button></div>
-    {!choiceOnly && <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3">
+    {!choiceOnly && data.preset !== "category-canvas" && <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3">
       <p className="text-xs font-semibold text-blue-900">Shared option & target size</p>
       <div className="mt-2 flex items-end gap-3">{(["width", "height"] as const).map(dimension => <label key={dimension} className="text-xs text-slate-700">{dimension === "width" ? "Option width" : "Option height"} (% of canvas width)<input type="number" min="2" max="100" step="0.5" value={Number((boxSize[dimension] / 10).toFixed(2))} onChange={event => { if (event.target.value && Number.isFinite(event.target.valueAsNumber)) onChange({ ...data, choiceSize: { ...boxSize, [dimension]: clamp(event.target.valueAsNumber, 2, 100) * 10 } }); }} className="mt-1 block w-28 rounded border border-slate-300 bg-white px-2 py-1 text-slate-950" /></label>)}<button type="button" onClick={() => onChange({ ...data, choiceSize: undefined })} className="rounded border border-blue-300 bg-white px-2 py-1 text-xs text-blue-800">Auto size</button></div>
       <p className="mt-2 text-xs text-slate-600">All options and targets always use this size. Drag a blank option’s resize handles to adjust them together.</p>
@@ -1270,11 +1299,13 @@ export default function LocationCanvasEditor({ data, onChange: emitChange, uploa
         {snapGuides.y !== null && <div className="pointer-events-none absolute left-0 right-0 z-[60] h-px bg-fuchsia-500 shadow-[0_0_0_1px_rgba(255,255,255,0.8)]" style={{ top: `${snapGuides.y}%` }} aria-hidden="true" />}
         {selectionMarquee && <div className="pointer-events-none absolute z-[70] border-2 border-blue-600 bg-blue-300/20" style={{ left: `${selectionMarquee.x}%`, top: `${selectionMarquee.y}%`, width: `${selectionMarquee.width}%`, height: `${selectionMarquee.height}%` }} aria-hidden="true" />}
         <div data-canvas-object onPointerDown={(event) => event.stopPropagation()} className="absolute bottom-2 right-2 z-[90] flex items-center gap-1 rounded-lg border border-slate-300 bg-white/95 p-1 shadow-lg backdrop-blur-sm">
-          <button type="button" onClick={undo} disabled={!undoStackRef.current.length} title="Undo (Ctrl/Cmd+Z)" aria-label="Undo" className="h-8 rounded-md px-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40">↶ Undo</button>
-          <button type="button" onClick={redo} disabled={!redoStackRef.current.length} title="Redo (Ctrl/Cmd+Shift+Z or Ctrl+Y)" aria-label="Redo" className="h-8 rounded-md px-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40">↷ Redo</button>
+          <button type="button" onClick={undo} disabled={!historyAvailability.canUndo} title="Undo (Ctrl/Cmd+Z)" aria-label="Undo" className="h-8 rounded-md px-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40">↶ Undo</button>
+          <button type="button" onClick={redo} disabled={!historyAvailability.canRedo} title="Redo (Ctrl/Cmd+Shift+Z or Ctrl+Y)" aria-label="Redo" className="h-8 rounded-md px-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40">↷ Redo</button>
         </div>
         <div className={`absolute inset-0 ${drawingShapeKind ? "pointer-events-none" : ""}`}>
-          {(data.canvasElements || []).map((element) => { const isInlineEditing = editingElementId === element.id && (element.type === "text" || element.type === "table" || element.type === "image" || element.type === "number-line" || element.type === "shape" || element.type === "algebra-tile"); const isGroupSelected = selectedElementIds.includes(element.id); const selectedTableCells = element.type === "table" ? getSelectedTableCells(element.id) : []; const selectedCellSet = new Set(selectedTableCells); const selectedMerge = element.type === "table" ? (element.mergedCells || []).find((merge) => Array.from({ length: merge.rowSpan }, (_, rowOffset) => Array.from({ length: merge.columnSpan }, (_, columnOffset) => `${merge.row + rowOffset}:${merge.column + columnOffset}`)).flat().some((cell) => selectedCellSet.has(cell))) : undefined; const activeTableCell = editingTableCell?.elementId === element.id ? editingTableCell : null; return <div key={element.id} data-nudge-kind="element" data-nudge-id={element.id} data-canvas-object onPointerDown={(event) => { if (element.type !== "text") beginElementGesture(event, element, "element-move"); }} onClick={(event) => { event.stopPropagation(); if (!gestureMovedRef.current) { setEditingZoneId(null); setEditingElementId(element.id); setEditingTextId(element.type === "text" && event.detail >= 2 ? element.id : null); if (selectedElementIds.length <= 1) setSelectedElementIds([element.id]); if (element.type !== "table") { setTableSelection(null); setEditingTableCell(null); } } }} onDoubleClick={(event) => { if (element.type === "text") { event.preventDefault(); event.stopPropagation(); setEditingElementId(element.id); setEditingTextId(element.id); } }} className={`absolute box-border cursor-move touch-none ${isInlineEditing ? "z-[80]" : "z-0"} ${isGroupSelected ? "ring-2 ring-blue-600 ring-offset-1" : element.type === "shape" ? "" : `bg-white/20 ${editingElementId === element.id ? "ring-2 ring-violet-500" : "hover:ring-2 hover:ring-violet-300"}`}`} style={{ left: `${element.x}%`, top: `${element.y}%`, width: `${element.width}%`, height: `${element.height}%` }}>
+          {/* Gesture refs are read only by pointer/click handlers created below, never while rendering. */}
+          {/* eslint-disable-next-line react-hooks/refs */}
+          {(data.canvasElements || []).map((element) => { const isInlineEditing = editingElementId === element.id && (element.type === "text" || element.type === "table" || element.type === "image" || element.type === "number-line" || element.type === "shape" || element.type === "algebra-tile"); const isGroupSelected = selectedElementIds.includes(element.id); const selectedTableCells = element.type === "table" ? getSelectedTableCells(element.id) : []; const selectedCellSet = new Set(selectedTableCells); const selectedMerge = element.type === "table" ? (element.mergedCells || []).find((merge) => Array.from({ length: merge.rowSpan }, (_, rowOffset) => Array.from({ length: merge.columnSpan }, (_, columnOffset) => `${merge.row + rowOffset}:${merge.column + columnOffset}`)).flat().some((cell) => selectedCellSet.has(cell))) : undefined; const activeTableCell = editingTableCell?.elementId === element.id ? editingTableCell : null; return <div key={element.id} data-nudge-kind="element" data-nudge-id={element.id} data-canvas-object onPointerDown={(event) => { if (element.type !== "text") beginElementGesture(event, element, "element-move"); }} onClick={(event) => selectCanvasElement(event, element)} onDoubleClick={(event) => { if (element.type === "text") { event.preventDefault(); event.stopPropagation(); setEditingElementId(element.id); setEditingTextId(element.id); } }} className={`absolute box-border cursor-move touch-none ${isInlineEditing ? "z-[80]" : "z-0"} ${isGroupSelected ? "ring-2 ring-blue-600 ring-offset-1" : element.type === "shape" ? "" : `bg-white/20 ${editingElementId === element.id ? "ring-2 ring-violet-500" : "hover:ring-2 hover:ring-violet-300"}`}`} style={{ left: `${element.x}%`, top: `${element.y}%`, width: `${element.width}%`, height: `${element.height}%` }}>
             {element.type === "text"
               ? <CanvasInlineTextEditor element={element} selected={editingElementId === element.id} editing={editingElementId === element.id && editingTextId === element.id} toolbarPlacement={element.y < 35 ? "below" : "above"} onChange={(patch) => updateElement(element.id, patch)} onMovePointerDown={(event) => beginElementGesture(event, element, "element-move")} onStartEditing={() => { setEditingElementId(element.id); setEditingTextId(element.id); }} onDelete={() => { updateElements((data.canvasElements || []).filter((currentElement) => currentElement.id !== element.id)); setEditingTextId(null); setEditingElementId(null); }} />
               : <LocationCanvasElementContent element={element} editableTable={element.type === "table" && editingElementId === element.id} activeTableCell={activeTableCell} selectedTableCells={selectedTableCells} onTableCellFocus={(rowIndex, columnIndex) => { setEditingTableCell({ elementId: element.id, row: rowIndex, column: columnIndex }); setTableHorizontalAlign(element.cellHorizontalAlign?.[rowIndex]?.[columnIndex] || "center"); setTableMathPanel(null); refreshTableHorizontalAlign(); }} onTableCellSelect={(rowIndex, columnIndex, extend) => selectTableCell(element.id, rowIndex, columnIndex, extend)} onTableCellPointerDown={(event) => beginElementGesture(event, element, "element-move", undefined, true)} onTableMathEdit={editTableMath} onTableCellChange={(rowIndex, columnIndex, html, text) => updateElement(element.id, { cells: Array.from({ length: element.rows || 2 }, (_, currentRow) => Array.from({ length: element.columns || 2 }, (_, currentColumn) => currentRow === rowIndex && currentColumn === columnIndex ? text : element.cells?.[currentRow]?.[currentColumn] || "")), cellHtml: Array.from({ length: element.rows || 2 }, (_, currentRow) => Array.from({ length: element.columns || 2 }, (_, currentColumn) => currentRow === rowIndex && currentColumn === columnIndex ? html : element.cellHtml?.[currentRow]?.[currentColumn] || "")) })} />}
@@ -1320,7 +1351,7 @@ export default function LocationCanvasEditor({ data, onChange: emitChange, uploa
                     const selectedAlignment = (element.cellVerticalAlign?.[activeTableCell.row]?.[activeTableCell.column] || "middle") === alignment;
                     return <button key={alignment} type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => updateElement(element.id, { cellVerticalAlign: Array.from({ length: element.rows || 2 }, (_, rowIndex) => Array.from({ length: element.columns || 2 }, (_, columnIndex) => rowIndex === activeTableCell.row && columnIndex === activeTableCell.column ? alignment : element.cellVerticalAlign?.[rowIndex]?.[columnIndex] || "middle")) })} className={`grid h-7 min-w-7 place-items-center rounded border px-1.5 ${selectedAlignment ? ACTIVE_TEXT_TOOLBAR_BUTTON : "border-slate-300 bg-white text-slate-800 hover:bg-blue-100"}`} aria-label={`Align cell text to the ${alignment}`} title={`Align ${alignment}`}><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="h-4 w-4" aria-hidden="true"><path d="M3 3h14M3 17h14" />{alignment === "top" ? <path d="M6 6h8M8 9h4" /> : alignment === "middle" ? <path d="M6 8h8M8 11h4" /> : <path d="M8 11h4M6 14h8" />}</svg></button>;
                   })}
-                  <button type="button" title="Math expression builder" aria-label="Math expression builder" aria-pressed={tableMathPanel === "editable"} onMouseDown={(event) => { event.preventDefault(); saveTableTextSelection(); }} onClick={() => setTableMathPanel((current) => { if (current !== "editable") { tableEditingMathRef.current = null; setEditingExistingTableMath(false); setTableMathTree(createEmptyMathExpression()); } return current === "editable" ? null : "editable"; })} className={`grid h-7 min-w-7 place-items-center rounded border px-1.5 font-semibold ${tableMathPanel === "editable" ? ACTIVE_TEXT_TOOLBAR_BUTTON : "border-slate-300 bg-white text-slate-800 hover:bg-blue-100"}`}>∑</button>
+                  <button type="button" title="Math expression builder" aria-label="Math expression builder" aria-pressed={tableMathPanel === "editable"} onMouseDown={(event) => { event.preventDefault(); saveTableTextSelection(); }} onClick={toggleTableMathPanel} className={`grid h-7 min-w-7 place-items-center rounded border px-1.5 font-semibold ${tableMathPanel === "editable" ? ACTIVE_TEXT_TOOLBAR_BUTTON : "border-slate-300 bg-white text-slate-800 hover:bg-blue-100"}`}>∑</button>
                   <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => applyTableInlineScript("subscript")} className={`grid h-7 min-w-7 place-items-center rounded border px-1.5 ${tableInlineFormat.subscript ? ACTIVE_TEXT_TOOLBAR_BUTTON : "border-slate-300 bg-white text-slate-800 hover:bg-blue-100"}`} aria-pressed={tableInlineFormat.subscript} aria-label="Subscript selected cell text"><TextScriptIcon kind="subscript" /></button>
                   <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => applyTableInlineScript("superscript")} className={`grid h-7 min-w-7 place-items-center rounded border px-1.5 ${tableInlineFormat.superscript ? ACTIVE_TEXT_TOOLBAR_BUTTON : "border-slate-300 bg-white text-slate-800 hover:bg-blue-100"}`} aria-pressed={tableInlineFormat.superscript} aria-label="Superscript selected cell text"><TextScriptIcon kind="superscript" /></button>
                   <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={toggleTableTextBox} className={`grid h-7 min-w-7 place-items-center rounded border px-1.5 ${tableInlineFormat.textBox ? ACTIVE_TEXT_TOOLBAR_BUTTON : "border-slate-300 bg-white text-slate-800 hover:bg-blue-100"}`} aria-pressed={tableInlineFormat.textBox} aria-label="Toggle box around cell text" title="Toggle box around text"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-5" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="2" /><path d="M6 9h12M6 13h9M6 17h11" /></svg></button>
@@ -1330,7 +1361,7 @@ export default function LocationCanvasEditor({ data, onChange: emitChange, uploa
                     value={tableMathTree}
                     onChange={setTableMathTree}
                     onCommit={() => insertTableMath(buildMathExpressionHtml(tableMathTree))}
-                    onCancel={() => { tableEditingMathRef.current = null; setEditingExistingTableMath(false); setTableMathPanel(null); }}
+                    onCancel={cancelTableMath}
                     onDelete={removeEditedTableMath}
                     editingExisting={editingExistingTableMath}
                     compact
@@ -1368,23 +1399,27 @@ export default function LocationCanvasEditor({ data, onChange: emitChange, uploa
             <div className={`flex w-max ${choicesAreVertical ? "flex-col" : "flex-row"}`} style={{ gap: "0.8cqw" }}>{data.items.map((item, index) => <div key={item.id} className="relative shrink-0" style={choicePresentation === "content" ? { ...contentBoxStyle(item) } : choicePresentation === "radio" ? { width: "3.2cqw", height: "3.2cqw" } : { width: `${item.width ?? 6}cqw`, height: `${(item.height ?? 10.5) * 9 / 16}cqw` }}><button type="button" data-choice-item-id={item.id} aria-label={item.content || `${choicePlaceholder} ${index + 1}`} onClick={() => { setEditingElementId(null); setEditingZoneId(null); setTableSelection(null); setEditingItemId(item.id); setShowChoiceImages(false); }} style={{ paddingTop: choicePresentation === "content" ? (choiceOnly ? "1cqw" : "0.6cqw") : 0, paddingBottom: choicePresentation === "content" ? (choiceOnly ? "1cqw" : "0.6cqw") : 0, paddingRight: choicePresentation === "content" ? (choiceOnly ? "1.2cqw" : "0.8cqw") : 0, paddingLeft: choicePresentation === "content" ? (choiceSelectionMode === "multiple" ? "4cqw" : choiceOnly ? "1.2cqw" : "0.8cqw") : 0, fontSize: "1.7cqw" }} className={`relative box-border flex h-full w-full flex-col ${choiceOnly && choicePresentation === "content" ? "items-start text-left" : "items-center text-center"} ${choiceVerticalClass(item)} border bg-white/50 font-medium text-black shadow-sm transition hover:ring-2 ${choiceOnly && choicePresentation === "content" ? "whitespace-nowrap" : ""} ${choicePresentation === "radio" ? "rounded-full border-2" : choiceOnly ? "rounded" : "rounded-none"} ${isChoiceCorrect?.(item.id, index) ? "border-emerald-600 ring-2 ring-emerald-300 hover:border-emerald-700 hover:ring-emerald-300" : editingItemId === item.id ? "border-blue-700 ring-2 ring-blue-300 hover:border-blue-700 hover:ring-blue-300" : "border-slate-400 hover:border-blue-600 hover:ring-blue-200"}`}>
                 {choicePresentation === "content" && (itemPreviewUrls[item.id] || item.imageUrl) && <img src={itemPreviewUrls[item.id] || item.imageUrl} alt="" className="mb-[0.5cqw] h-0 min-h-0 w-full max-w-full flex-1 object-contain" />}
                 {choicePresentation === "content" && choiceText(item, index)}
-              </button>{editingItemId === item.id && (emptyChoice(item) || (choiceOnly && choicePresentation === "content" && data.choiceSameSize !== true)) && choiceResizeHandles(item)}</div>)}</div>
+              </button>{editingItemId === item.id && (data.preset === "category-canvas" || emptyChoice(item) || (choiceOnly && choicePresentation === "content" && data.choiceSameSize !== true)) && choiceResizeHandles(item)}</div>)}</div>
           </div>}
           {!compositionOnly && !choicesAreGrouped && data.items.length > 0 && <div data-canvas-object className="absolute left-2 top-2 z-40 flex items-center gap-1"><button type="button" onClick={() => onChange({ ...data, choiceBankGrouped: true, choiceBankX: Math.min(...data.items.map((item) => item.x ?? 8)), choiceBankY: Math.min(...data.items.map((item) => item.y ?? 35)) })} className="rounded bg-blue-700 px-2 py-1 text-xs font-bold text-white shadow">Group choices</button>{choiceOnly && allowChoiceMarkers && <select value={choicePresentation === "box" ? "content" : choicePresentation} onChange={(event) => onChange({ ...data, choicePresentation: event.target.value as "content" | "radio" | "box" })} className="h-6 rounded border border-blue-300 bg-white px-1.5 text-xs font-semibold text-blue-900 shadow" aria-label="Choice appearance"><option value="content">Word / image</option><option value="radio">Radio buttons</option></select>}{sameSizeControl}</div>}
           {!compositionOnly && !choicesAreGrouped && data.items.map((item, index) => <div key={item.id} data-nudge-kind="item" data-nudge-id={item.id} data-canvas-object role="button" aria-label={item.content || `${choicePlaceholder} ${index + 1}`} onPointerDown={(event) => beginChoiceItemGesture(event, item)} onClick={(event) => { event.stopPropagation(); if (!gestureMovedRef.current) { setEditingItemId(item.id); setShowChoiceImages(false); } }} className={`absolute z-30 box-border flex cursor-move touch-none flex-col ${choiceOnly && choicePresentation === "content" ? "items-start text-left" : "items-center text-center"} ${choiceVerticalClass(item)} border bg-white/50 font-medium text-black shadow-sm transition hover:ring-2 ${choiceOnly && choicePresentation === "content" ? "whitespace-nowrap" : ""} ${choicePresentation === "radio" ? "rounded-full border-2" : choiceOnly ? "rounded" : "rounded-none"} ${selectedItemIds.includes(item.id) ? "border-blue-700 ring-2 ring-blue-600 ring-offset-1" : isChoiceCorrect?.(item.id, index) ? "border-emerald-600 ring-2 ring-emerald-300 hover:border-emerald-700 hover:ring-emerald-300" : editingItemId === item.id ? "border-blue-700 ring-2 ring-blue-300 hover:border-blue-700 hover:ring-blue-300" : "border-slate-400 hover:border-blue-600 hover:ring-blue-200"}`} style={{ left: `${item.x ?? 8}%`, top: `${item.y ?? 35}%`, ...(choicePresentation === "content" ? contentBoxStyle(item) : choicePresentation === "radio" ? { width: "3.2cqw", height: "3.2cqw" } : { width: `${item.width ?? 6}%`, height: `${item.height ?? 10.5}%` }), paddingTop: choicePresentation === "content" ? (choiceOnly ? "1cqw" : "0.6cqw") : 0, paddingBottom: choicePresentation === "content" ? (choiceOnly ? "1cqw" : "0.6cqw") : 0, paddingRight: choicePresentation === "content" ? (choiceOnly ? "1.2cqw" : "0.8cqw") : 0, paddingLeft: choicePresentation === "content" ? (choiceSelectionMode === "multiple" ? "4cqw" : choiceOnly ? "1.2cqw" : "0.8cqw") : 0, fontSize: "1.7cqw" }}>
             {choicePresentation === "content" && (itemPreviewUrls[item.id] || item.imageUrl) && <img src={itemPreviewUrls[item.id] || item.imageUrl} alt="" draggable={false} className="pointer-events-none mb-[0.5cqw] h-0 min-h-0 w-full max-w-full flex-1 object-contain" />}
             {choicePresentation === "content" && choiceText(item, index)}
-            {(choicePresentation === "box" || emptyChoice(item) || (choiceOnly && choicePresentation === "content" && data.choiceSameSize !== true)) && editingItemId === item.id && choiceResizeHandles(item)}
+            {(data.preset === "category-canvas" || choicePresentation === "box" || emptyChoice(item) || (choiceOnly && choicePresentation === "content" && data.choiceSameSize !== true)) && editingItemId === item.id && choiceResizeHandles(item)}
           </div>)}
           {editingItemId && (() => { const index = data.items.findIndex((item) => item.id === editingItemId); const item = data.items[index]; if (!item) return null; const precedingOffset = data.items.slice(0, index).reduce((sum, current) => sum + (choicesAreVertical ? itemPercentSize(current).height : itemPercentSize(current).width) + 0.8, 0); const itemCanvasX = choicesAreGrouped ? (data.choiceBankX ?? 8) + (choicesAreVertical ? 0 : precedingOffset) : item.x ?? 8; const itemCanvasY = choicesAreGrouped ? (data.choiceBankY ?? 6) + (choicesAreVertical ? precedingOffset : 0) : item.y ?? 35; return choiceEditor(item, itemCanvasX, itemCanvasY); })()}
           {data.zones.map((zone, index) => <div key={zone.id} data-nudge-kind="zone" data-nudge-id={zone.id} data-canvas-object onPointerDown={(event) => beginGesture(event, zone)} onClick={(event) => { event.stopPropagation(); if (!gestureMovedRef.current) { setEditingElementId(null); setTableSelection(null); setEditingZoneId(zone.id); } }} className={`absolute z-20 box-border cursor-move touch-none border-2 border-dashed bg-blue-100/45 ${editingZoneId === zone.id ? "border-blue-700 ring-2 ring-blue-300" : "border-blue-500"}`} style={{ left: `${zone.x ?? 10}%`, top: `${zone.y ?? 10}%`, ...(data.preset === "category-canvas" ? { width: `${zone.width ?? 43}%`, height: `${zone.height ?? 40}%` } : boxCanvasStyle) }}>
-            {data.preset === "category-canvas" && <div className="border-b border-blue-400 p-2 text-center text-sm font-semibold">{zone.label}<p className="text-xs font-normal">{zone.correctItemIds.length} assigned choices</p></div>}
+            {data.preset === "category-canvas" && <div className="border-b border-blue-400 p-2 text-center text-sm font-semibold"><div className="rich-text-content" dangerouslySetInnerHTML={{ __html: getDragDropZoneHtml(zone) }} /><p className="text-xs font-normal">{zone.correctItemIds.length} assigned choices</p></div>}
             <span className="absolute left-1 top-1 grid h-6 min-w-6 place-items-center rounded bg-blue-700 px-1 text-xs font-bold text-white">{index + 1}</span>{data.preset === "category-canvas" && <button type="button" aria-label={`Resize ${zone.label}`} onPointerDown={event => { event.preventDefault(); event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); setGesture({ kind: "target-resize", zoneId: zone.id, startX: event.clientX, startY: event.clientY, startLeft: zone.x ?? 5, startTop: zone.y ?? 45, startWidth: zone.width ?? 43, startHeight: zone.height ?? 40 }); }} className="absolute -bottom-1 -right-1 h-4 w-4 cursor-se-resize border border-blue-700 bg-white" />}
           </div>)}
-          {data.zones.map((zone) => editingZoneId === zone.id && <div key={`editor-${zone.id}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} className="absolute z-40 w-64 rounded-xl border border-blue-300 bg-white p-3 text-left shadow-xl" style={{ left: `min(${zone.x ?? 10}%, calc(100% - 16rem))`, ...((zone.y ?? 10) > 55 ? { bottom: `calc(${100 - (zone.y ?? 10)}% + 0.8cqw)` } : { top: `calc(${zone.y ?? 10}% + ${boxSize.height / 10 + 0.8}cqw)` }) }}>
-            <label className="block text-xs font-semibold text-slate-700">{data.preset === "category-canvas" ? "Category label" : "Target label"}<input value={zone.label} onChange={(event) => updateZone(zone.id, { label: event.target.value })} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-950" /></label>
+          {data.zones.map((zone) => editingZoneId === zone.id && <div key={`editor-${zone.id}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} className={`absolute z-[100] max-w-[calc(100%-1rem)] rounded-xl border border-blue-300 bg-white p-3 text-left shadow-xl ${data.preset === "category-canvas" ? "w-[56rem]" : "w-64"}`} style={{ left: data.preset === "category-canvas" ? `max(0.5rem, min(${zone.x ?? 10}%, calc(100% - 56.5rem)))` : `min(${zone.x ?? 10}%, calc(100% - 16rem))`, ...((zone.y ?? 10) > 55 ? { bottom: `calc(${100 - (zone.y ?? 10)}% + 0.8cqw)` } : { top: `calc(${zone.y ?? 10}% + ${boxSize.height / 10 + 0.8}cqw)` }) }}>
+            {data.preset === "category-canvas" ? <div className="text-xs font-semibold text-slate-700"><span className="mb-1 block">Category title</span><RichTextEditor value={getDragDropZoneHtml(zone)} onChange={(html) => {
+              const container = document.createElement("div");
+              container.innerHTML = html.replace(/<br\s*\/?>(?!$)/gi, "\n").replace(/<\/(?:div|p|tr)>/gi, "\n");
+              const label = (container.textContent || "").replaceAll("\u200B", "").trim();
+              updateZone(zone.id, { label, labelHtml: html });
+            }} placeholder="Category title" minHeight="5.5rem" /></div> : <label className="block text-xs font-semibold text-slate-700">Target label<input value={zone.label} onChange={(event) => updateZone(zone.id, { label: event.target.value })} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-950" /></label>}
             {data.preset === "category-canvas" ? <>
-              <div className="my-2 flex gap-2">{(["width", "height"] as const).map(dimension => <label key={dimension} className="text-xs">{dimension}<input aria-label={`Category ${dimension}`} type="number" min={10} max={100 - (dimension === "width" ? zone.x ?? 5 : zone.y ?? 45)} value={zone[dimension] ?? 40} onChange={event => updateZone(zone.id, { [dimension]: Math.max(10, Math.min(100 - (dimension === "width" ? zone.x ?? 5 : zone.y ?? 45), Number(event.target.value))) })} className="w-20 rounded border p-1" /></label>)}</div>
               <fieldset className="max-h-48 overflow-auto"><legend className="text-xs font-semibold">Correct choices</legend>{data.items.map((item, index) => <label key={item.id} className="flex items-center gap-2 py-1 text-sm"><input type="checkbox" checked={zone.correctItemIds.includes(item.id)} onChange={event => updateZones(data.zones.map(current => ({ ...current, correctItemIds: current.id === zone.id ? (event.target.checked ? [...current.correctItemIds, item.id] : current.correctItemIds.filter(id => id !== item.id)) : current.correctItemIds.filter(id => id !== item.id) })))} />{itemPreviewUrls[item.id] || item.imageUrl ? <img src={itemPreviewUrls[item.id] || item.imageUrl} alt="" className="h-8 w-8 object-contain" /> : null}{item.content || `Choice ${index + 1}`}</label>)}</fieldset>
             </> : <TargetChoicePicker items={data.items} value={zone.correctItemIds[0] || ""} imageUrls={itemPreviewUrls} disabledIds={data.zones.filter(currentZone => currentZone.id !== zone.id).flatMap(currentZone => currentZone.correctItemIds)} onChange={(id) => updateZone(zone.id, { correctItemIds: id ? [id] : [], capacity: 1 })} />}
             <div className="mt-3 flex justify-between gap-2"><button type="button" onClick={() => setEditingZoneId(null)} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700">Done</button><button type="button" onClick={() => { updateZones(data.zones.filter((currentZone) => currentZone.id !== zone.id)); setEditingZoneId(null); }} className="rounded-lg border border-red-300 px-3 py-2 text-xs font-semibold text-red-700">{data.preset === "category-canvas" ? "Remove category" : "Remove target"}</button></div>

@@ -14,11 +14,17 @@ test('category canvas survives saved-data conversion with multiple answers and g
   assert.equal(gradeDragDrop(restored, { [data.zones[0].id]: ['x', 'y'], [data.zones[1].id]: ['w'] }).isCorrect, false);
 });
 
-test('completion depends on sorting every choice, not guessing which categories must be filled', () => {
+test('placing any choice marks a category canvas question as answered', () => {
   const data = createCategoryCanvasData();
   const ids = data.items.map(item => item.id);
+  data.items.push({ id: 'distractor', content: 'Optional distractor' });
   assert.equal(isDragDropAnswered(data, {}), false);
-  assert.equal(isDragDropAnswered(data, { [data.zones[0].id]: [ids[0]] }), false);
-  assert.equal(isDragDropAnswered(data, { [data.zones[0].id]: ids }), true);
-  assert.equal(gradeDragDrop(data, { [data.zones[0].id]: ids }).isCorrect, false);
+  assert.equal(isDragDropAnswered(data, { [data.zones[0].id]: [ids[0]] }), true);
+  assert.equal(isDragDropAnswered(data, { [data.zones[0].id]: ['distractor'] }), true);
+  const complete = { [data.zones[0].id]: [ids[0]], [data.zones[1].id]: [ids[1]] };
+  assert.equal(isDragDropAnswered(data, complete), true);
+  assert.equal(gradeDragDrop(data, complete).isCorrect, true);
+  const completeButWrong = { [data.zones[0].id]: [ids[1]], [data.zones[1].id]: [ids[0]] };
+  assert.equal(isDragDropAnswered(data, completeButWrong), true);
+  assert.equal(gradeDragDrop(data, completeButWrong).isCorrect, false);
 });

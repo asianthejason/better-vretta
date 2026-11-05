@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import LocationCanvasElementContent from "@/app/components/LocationCanvasElementContent";
-import { getDragDropItemHtml, getInlineBlankSegments, getInlineChoiceBoxSize, getLocationBoxSize, getSequenceTargetCount, normalizeCanvasHeight, type DragDropData, type DragDropPlacements } from "@/lib/dragDrop";
+import { getDragDropItemHtml, getDragDropZoneHtml, getInlineBlankSegments, getInlineChoiceBoxSize, getLocationBoxSize, getSequenceTargetCount, normalizeCanvasHeight, type DragDropData, type DragDropPlacements } from "@/lib/dragDrop";
 
-export default function DragDropQuestion({ data, placements, onChange }: { data: DragDropData; placements: DragDropPlacements; onChange: (value: DragDropPlacements) => void }) {
+export default function DragDropQuestion({ data, placements, onChange, shuffleChoices = data.settings.shuffleItems }: { data: DragDropData; placements: DragDropPlacements; onChange: (value: DragDropPlacements) => void; shuffleChoices?: boolean }) {
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const itemIdsKey = data.items.map((item) => item.id).join("|");
   const [itemOrder, setItemOrder] = useState(() => data.items.map((item) => item.id));
@@ -16,7 +16,7 @@ export default function DragDropQuestion({ data, placements, onChange }: { data:
 
   useEffect(() => {
     const nextOrder = data.items.map((item) => item.id);
-    if (data.settings.shuffleItems) {
+    if (shuffleChoices) {
       for (let index = nextOrder.length - 1; index > 0; index -= 1) {
         const swapIndex = Math.floor(Math.random() * (index + 1));
         [nextOrder[index], nextOrder[swapIndex]] = [nextOrder[swapIndex], nextOrder[index]];
@@ -25,7 +25,7 @@ export default function DragDropQuestion({ data, placements, onChange }: { data:
     // The saved item list is external question data; refresh its stable display order when it changes.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setItemOrder(nextOrder);
-  }, [itemIdsKey, data.items, data.settings.shuffleItems]);
+  }, [itemIdsKey, data.items, shuffleChoices]);
 
   const dropHandled = useRef(false);
   const placedIds = Object.values(placements).flat();
@@ -80,7 +80,7 @@ export default function DragDropQuestion({ data, placements, onChange }: { data:
 
   const canvasBank = <div aria-label="Choice lineup" onDragOver={event => event.preventDefault()} onDrop={bankDrop} className={data.choiceBankGrouped === false ? "contents" : `absolute z-30 flex w-max ${data.choiceBankDirection === "vertical" ? "flex-col" : "flex-row"}`} style={data.choiceBankGrouped === false ? undefined : { left: `${data.choiceBankX ?? 8}%`, top: `${data.choiceBankY ?? 6}%`, gap: "0.8cqw" }}>
     {orderedItems.map((item, index) => {
-      const slot = data.settings.shuffleItems ? data.items[index] : item;
+      const slot = shuffleChoices ? data.items[index] : item;
       const available = bank.some(candidate => candidate.id === item.id);
       if (!available && data.choiceBankGrouped !== false) return null;
       return <div key={item.id} data-choice-slot={item.id} onDragOver={event => event.preventDefault()} onDrop={bankDrop} style={{ ...locationCanvasBoxStyle, flexShrink: 0, ...(data.choiceBankGrouped === false ? { position: "absolute", zIndex: 30, left: `${slot.x ?? 8}%`, top: `${slot.y ?? 35}%` } as const : {}) }}>
@@ -96,7 +96,7 @@ export default function DragDropQuestion({ data, placements, onChange }: { data:
       {(data.canvasElements || []).map(element => <div key={element.id} className="absolute" style={{ left: `${element.x}%`, top: `${element.y}%`, width: `${element.width}%`, height: `${element.height}%` }}><LocationCanvasElementContent element={element} /></div>)}
       {canvasBank}
       {data.zones.map(zone => <div key={zone.id} onDragOver={event => event.preventDefault()} onDrop={event => drop(event, zone.id)} className="absolute z-20 flex flex-col border border-slate-500 bg-white/90" style={{ left: `${zone.x ?? 5}%`, top: `${zone.y ?? 45}%`, width: `${zone.width ?? 43}%`, height: `${zone.height ?? 40}%`, fontSize: "1.7cqw" }}>
-        <button type="button" aria-label={`Place selected choice in ${zone.label}`} onClick={() => selectedItemId && place(selectedItemId, zone.id)} className="shrink-0 border-b border-slate-500 p-2 font-semibold focus:ring-2 focus:ring-blue-500">{zone.label}</button>
+        <button type="button" aria-label={`Place selected choice in ${zone.label}`} onClick={() => selectedItemId && place(selectedItemId, zone.id)} className="shrink-0 border-b border-slate-500 p-2 font-semibold focus:ring-2 focus:ring-blue-500"><span className="rich-text-content" dangerouslySetInnerHTML={{ __html: getDragDropZoneHtml(zone) }} /></button>
         <div onClick={() => selectedItemId && place(selectedItemId, zone.id)} className="flex min-h-0 flex-1 flex-wrap content-start gap-2 overflow-auto p-3">
           {(placements[zone.id] || []).map(id => <span key={id} className="relative max-w-full">{itemCard(id)}</span>)}
         </div>

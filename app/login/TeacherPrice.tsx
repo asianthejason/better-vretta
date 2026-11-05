@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { TEACHER_PLANS, type TeacherPlan } from "@/lib/teacherPlans";
 
 function formatCad(amount: number) {
+  if (amount === 0) return "0.00";
   return amount % 100 === 0 ? String(amount / 100) : (amount / 100).toFixed(2);
 }
 

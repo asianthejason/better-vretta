@@ -11,9 +11,9 @@ test('inline powers keep the base on the surrounding text baseline', async ({ pa
   for (const content of css) await page.addStyleTag({content});
   const math=page.locator('#power math');
   await expect(math).toHaveCSS('vertical-align','baseline');
-  const base=(await page.locator('#power msup > mtext').first().boundingBox())!;
-  const plain=(await page.locator('#plain mtext').boundingBox())!;
-  const exponent=(await page.locator('#power msup > mtext').last().boundingBox())!;
+  const base=(await page.locator('#power msup > :first-child').boundingBox())!;
+  const plain=(await page.locator('#plain math').boundingBox())!;
+  const exponent=(await page.locator('#power msup > :last-child').boundingBox())!;
   expect(base.y+base.height).toBeCloseTo(plain.y+plain.height,0);
   expect(exponent.y).toBeLessThan(base.y);
   const marker=(await page.locator('#baseline').boundingBox())!;
