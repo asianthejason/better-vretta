@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import { CardElement, Elements, useElements, useStripe } from "@stripe/react-stripe-js";
 import { TEACHER_PLANS, type TeacherPlan } from "@/lib/teacherPlans";
 import { loadStripe } from "@stripe/stripe-js/pure";
+import { siteUrl } from "@/lib/siteUrl";
 
 export type SignupCardHandle = {
   collect: (email: string) => Promise<string>;
@@ -41,7 +42,7 @@ export async function payTeacherPlan(paymentMethod: string, auth: SignupPaymentA
   if (session.total.total.minorUnitsAmount !== TEACHER_PLANS[selectedPlan].annualAmount || session.currency.toLowerCase() !== "cad") throw new Error("The payment total changed. Please reload before paying.");
   const result = await loaded.actions.confirm({
     paymentMethod, redirect: "if_required",
-    returnUrl: `${window.location.origin}/teacher/signup?session_id=${encodeURIComponent(data.sessionId)}`,
+    returnUrl: siteUrl(`/teacher/signup?session_id=${encodeURIComponent(data.sessionId)}`, window.location.origin),
   });
   if (result.type === "error") throw new Error(result.error.message);
   await api("/api/teacher-signup/confirm", { sessionId: data.sessionId });

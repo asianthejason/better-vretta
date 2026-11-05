@@ -8,6 +8,7 @@ import { TEACHER_PLANS, type TeacherPlan } from "@/lib/teacherPlans";
 import TeacherSignup from "@/app/teacher/signup/page";
 import SignupCard, { type SignupCardHandle } from "./SignupCard";
 import { clearPendingSignup, readPendingSignup, savePendingSignup } from "@/lib/pendingSignup";
+import { siteUrl } from "@/lib/siteUrl";
 
 export default function LoginPage() {
   const [teacherSetup, setTeacherSetup] = useState(false);
@@ -80,7 +81,7 @@ export default function LoginPage() {
           email: email.trim(), password,
           options: {
             data: { role: "student", signup_intent: role, signup_nonce: nonce },
-            emailRedirectTo: `${window.location.origin}/login${role === "teacher" ? "?teacher=1" : ""}`,
+            emailRedirectTo: siteUrl(`/login${role === "teacher" ? "?teacher=1" : ""}`, window.location.origin),
           },
         });
         if (result.error) throw result.error;
@@ -130,7 +131,7 @@ export default function LoginPage() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
-          redirectTo: `${window.location.origin}/login${mode === "signup" && role === "teacher" ? "?teacher=1" : ""}`,
+          redirectTo: siteUrl(`/login${mode === "signup" && role === "teacher" ? "?teacher=1" : ""}`, window.location.origin),
           queryParams: { prompt: "select_account" },
         },
       });
