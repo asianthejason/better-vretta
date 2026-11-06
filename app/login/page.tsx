@@ -73,6 +73,21 @@ export default function LoginPage() {
         : null;
       if (role === "teacher" && amount > 0 && !paymentMethod) throw new Error("The card form is unavailable. Please reload and try again.");
 
+      if (role === "student") {
+        const response = await fetch("/api/student-signup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: email.trim(), password }),
+        });
+        const result = await response.json() as { created?: boolean; error?: string };
+        if (!response.ok || !result.created) throw new Error(result.error || "Unable to create your student account.");
+        const signedIn = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+        if (signedIn.error || !signedIn.data.session) throw new Error("Your account was created, but sign-in failed. Please log in with your new account.");
+        clearPendingSignup();
+        window.location.replace("/student/dashboard");
+        return;
+      }
+
       let pending = readPendingSignup();
       let session = (await supabase.auth.getSession()).data.session;
       if (!pending || pending.email.toLowerCase() !== email.trim().toLowerCase() || pending.role !== role || !pending.userId || !pending.nonce) {

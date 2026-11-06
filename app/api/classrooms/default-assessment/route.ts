@@ -1,7 +1,10 @@
 import { adminClient } from "@/lib/teacherBilling";
 import { createClient } from "@supabase/supabase-js";
+import type { WebSocketLikeConstructor } from "@supabase/realtime-js";
+import WebSocket from "ws";
 
-const SOURCE_ASSESSMENT_ID = "9172cd6c-e319-40a3-821e-84a6c365508b";
+const TEMPLATE_KEY = "grade-9-math-practice-b";
+const TEMPLATE_TITLE = "Grade 9 Practice Test - Mathematics - Part B";
 
 function assessmentCode() {
   return crypto.randomUUID().replaceAll("-", "").slice(0, 6).toUpperCase();
@@ -14,6 +17,7 @@ function authenticatedClient(token: string) {
   return createClient(url, anonKey, {
     auth: { persistSession: false, autoRefreshToken: false },
     global: { headers: { Authorization: `Bearer ${token}` } },
+    realtime: { transport: WebSocket as unknown as WebSocketLikeConstructor },
   });
 }
 
@@ -37,22 +41,69 @@ export async function POST(request: Request) {
       return Response.json({ error: "You do not teach this classroom." }, { status: 403 });
     }
 
-    const { data: source, error: sourceError } = await admin
+    const { data: existingTemplateCopy, error: existingTemplateError } = await admin
       .from("assessments")
-      .select("title,description,formula_sheet")
-      .eq("id", SOURCE_ASSESSMENT_ID)
-      .single();
-    if (sourceError || !source) return Response.json({ error: "The example assessment is unavailable." }, { status: 503 });
+      .select("id")
+      .eq("classroom_id", classroomId)
+      .eq("template_key", TEMPLATE_KEY)
+      .limit(1)
+      .maybeSingle();
+    if (!existingTemplateError && existingTemplateCopy) {
+      return Response.json({ created: false, assessmentId: existingTemplateCopy.id });
+    }
 
-    const { data: existing } = await admin
+    const { data: protectedTemplate } = await admin
+      .from("default_assessment_templates")
+      .select("title,description,formula_sheet")
+      .eq("template_key", TEMPLATE_KEY)
+      .maybeSingle();
+
+    let source = protectedTemplate;
+    let questions: Array<{ question_order: number; question_type: string; prompt: string; question_data: unknown }> | null = null;
+    if (protectedTemplate) {
+      const protectedQuestions = await admin
+        .from("default_assessment_template_questions")
+        .select("question_order,question_type,prompt,question_data")
+        .eq("template_key", TEMPLATE_KEY)
+        .order("question_order");
+      if (!protectedQuestions.error && protectedQuestions.data?.length) questions = protectedQuestions.data;
+    }
+
+    // Compatibility fallback for databases whose protected template tables
+    // are empty. The original assessment may have been deleted, so locate the
+    // oldest surviving complete copy by its canonical title instead of ID.
+    if (!source || !questions?.length) {
+      const sourceResult = await admin
+        .from("assessments")
+        .select("id,title,description,formula_sheet")
+        .eq("title", TEMPLATE_TITLE)
+        .order("created_at")
+        .limit(1)
+        .maybeSingle();
+      if (!source && sourceResult.data) source = sourceResult.data;
+      if (sourceResult.data?.id) {
+        const questionResult = await admin
+          .from("questions")
+          .select("question_order,question_type,prompt,question_data")
+          .eq("assessment_id", sourceResult.data.id)
+          .order("question_order");
+        if (!questions?.length && !questionResult.error && questionResult.data?.length) questions = questionResult.data;
+      }
+    }
+
+    if (!source || !questions?.length) return Response.json({ error: "The example assessment template is unavailable." }, { status: 503 });
+
+    const { data: existingTitleCopy } = await admin
       .from("assessments")
       .select("id")
       .eq("classroom_id", classroomId)
       .eq("title", source.title)
       .limit(1)
       .maybeSingle();
-    if (existing) return Response.json({ created: false, assessmentId: existing.id });
+    if (existingTitleCopy) return Response.json({ created: false, assessmentId: existingTitleCopy.id });
 
+    // Use the teacher-scoped client for writes so database ownership triggers
+    // receive the authenticated teacher's auth.uid().
     const { data: copy, error: copyError } = await teacherClient.from("assessments").insert({
       teacher_id: classroom.teacher_id,
       classroom_id: classroomId,
@@ -61,18 +112,10 @@ export async function POST(request: Request) {
       formula_sheet: source.formula_sheet || {},
       assessment_code: assessmentCode(),
       is_published: false,
+      ...(protectedTemplate ? { template_key: TEMPLATE_KEY } : {}),
     }).select("id").single();
     if (copyError || !copy) return Response.json({ error: copyError?.message || "Could not create the example assessment." }, { status: 500 });
 
-    const { data: questions, error: questionError } = await admin
-      .from("questions")
-      .select("question_order,question_type,prompt,question_data")
-      .eq("assessment_id", SOURCE_ASSESSMENT_ID)
-      .order("question_order");
-    if (questionError || !questions?.length) {
-      await admin.from("assessments").delete().eq("id", copy.id);
-      return Response.json({ error: "The example questions are unavailable." }, { status: 503 });
-    }
     const { error: insertError } = await teacherClient.from("questions").insert(
       questions.map((question) => ({ ...question, assessment_id: copy.id })),
     );
@@ -82,7 +125,7 @@ export async function POST(request: Request) {
     }
     return Response.json({ created: true, assessmentId: copy.id });
   } catch (error) {
-    console.error("Default assessment creation failed", error instanceof Error ? error.name : "Unknown error");
+    console.error("Default assessment creation failed", error instanceof Error ? `${error.name}: ${error.message}` : "Unknown error");
     return Response.json({ error: "Could not create the example assessment." }, { status: 500 });
   }
 }

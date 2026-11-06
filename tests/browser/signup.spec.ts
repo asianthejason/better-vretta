@@ -69,9 +69,16 @@ test("unverified teacher signup opens a locked teacher dashboard", async ({ page
   await expect(page.getByRole("tooltip").filter({ hasText: "Verify your email to unlock this feature." })).toBeVisible();
 });
 
-test("unverified student signup opens a locked student dashboard", async ({ page }) => {
-  const user = { id: "00000000-0000-4000-8000-000000000011", aud: "authenticated", role: "authenticated", email: "student@example.test", identities: [{ id: "identity-2" }], user_metadata: { signup_intent: "student" }, app_metadata: {}, created_at: new Date().toISOString() };
-  await page.route("**/auth/v1/signup**", route => route.fulfill({ json: { user, session: null } }));
+test("student signup skips email verification and signs in immediately", async ({ page }) => {
+  const user = { id: "00000000-0000-4000-8000-000000000011", aud: "authenticated", role: "authenticated", email: "student@example.test", email_confirmed_at: new Date().toISOString(), identities: [{ id: "identity-2" }], user_metadata: { signup_intent: "student" }, app_metadata: {}, created_at: new Date().toISOString() };
+  await page.route("**/api/student-signup", async route => {
+    expect(route.request().postDataJSON()).toEqual({ email: "student@example.test", password: "Test-password-123!" });
+    await route.fulfill({ status: 201, json: { created: true } });
+  });
+  await page.route("**/auth/v1/token?grant_type=password", route => route.fulfill({ json: { access_token: "student-access-token", refresh_token: "student-refresh-token", expires_in: 3600, token_type: "bearer", user } }));
+  await page.route("**/auth/v1/user", route => route.fulfill({ json: user }));
+  await page.route("**/rest/v1/profiles**", route => route.fulfill({ json: { role: "student" } }));
+  await page.route("**/rest/v1/classroom_students**", route => route.fulfill({ json: [] }));
   await page.goto("/login");
   await page.getByRole("button", { name: "Sign up", exact: true }).click();
   await page.getByPlaceholder("teacher@example.com").fill("student@example.test");
@@ -79,6 +86,6 @@ test("unverified student signup opens a locked student dashboard", async ({ page
   await page.getByRole("button", { name: "Create Student Account" }).click();
   await expect(page).toHaveURL(/\/student\/dashboard$/);
   await expect(page.getByText("Student Dashboard", { exact: true })).toBeVisible();
-  await expect(page.getByRole("dialog").getByText("student@example.test")).toBeVisible();
-  await expect(page.getByRole("button", { name: /Join Classroom/ })).toBeDisabled();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByPlaceholder("Enter classroom code")).toBeEnabled();
 });
