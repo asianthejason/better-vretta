@@ -48,6 +48,7 @@ export async function POST(request: Request) {
       .eq("template_key", TEMPLATE_KEY)
       .limit(1)
       .maybeSingle();
+    const supportsTemplateKey = !existingTemplateError;
     if (!existingTemplateError && existingTemplateCopy) {
       return Response.json({ created: false, assessmentId: existingTemplateCopy.id });
     }
@@ -112,7 +113,7 @@ export async function POST(request: Request) {
       formula_sheet: source.formula_sheet || {},
       assessment_code: assessmentCode(),
       is_published: false,
-      ...(protectedTemplate ? { template_key: TEMPLATE_KEY } : {}),
+      ...(protectedTemplate && supportsTemplateKey ? { template_key: TEMPLATE_KEY } : {}),
     }).select("id").single();
     if (copyError || !copy) return Response.json({ error: copyError?.message || "Could not create the example assessment." }, { status: 500 });
 

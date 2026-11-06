@@ -33,3 +33,35 @@ test("built-in question templates are snapshotted outside user-owned assessments
     await db.close();
   }
 });
+
+test("Sort into Groups is protected from assessment deletion", async () => {
+  const db = new PGlite();
+  const assessmentId = "00000000-0000-4000-8000-000000000010";
+  const questionId = "f33a8b0e-c4cf-4b98-b6df-d860ec7b37d2";
+  try {
+    await db.exec(`
+      create role anon; create role authenticated;
+      create table public.assessments(id uuid primary key, title text not null);
+      create table public.questions(
+        id uuid primary key, assessment_id uuid not null references public.assessments(id) on delete cascade,
+        question_order integer not null, question_type text not null, prompt text, question_data jsonb not null
+      );
+      insert into public.assessments values ('${assessmentId}', 'Source');
+      insert into public.questions values (
+        '${questionId}', '${assessmentId}', 1, 'sort-into-groups', 'Sort the statements',
+        '{"dragDrop":{"preset":"category-canvas"}}'
+      );
+    `);
+    const migration = await readFile(new URL("../supabase/migrations/20261106_protect_sort_into_groups_template.sql", import.meta.url), "utf8");
+    await db.exec(migration);
+    await db.exec(`delete from assessments where id='${assessmentId}'`);
+    const protectedRows = await db.query<{ question_type: string; preset: string }>(`
+      select question_type, question_data #>> '{dragDrop,preset}' as preset
+      from default_assessment_template_questions
+      where template_key='variation-sort-into-groups'
+    `);
+    assert.deepEqual(protectedRows.rows, [{ question_type: "sort-into-groups", preset: "category-canvas" }]);
+  } finally {
+    await db.close();
+  }
+});

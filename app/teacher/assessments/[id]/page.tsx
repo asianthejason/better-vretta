@@ -690,6 +690,7 @@ export default function AssessmentEditorPage({
   const selectedDragDropItemFilesRef = useRef<Record<string, File>>({});
   const uploadedDragDropFilesRef = useRef(new WeakMap<File, { imageUrl: string; imagePath: string }>());
   const duplicatedQuestionScrollTargetRef = useRef<string | null>(null);
+  const imageRecoveryStartedRef = useRef(false);
 
   const [questionLayout, setQuestionLayout] =
     useState<QuestionLayout>("standard");
@@ -794,6 +795,7 @@ export default function AssessmentEditorPage({
   );
 
   const [loading, setLoading] = useState(true);
+  const [templateLibraryLoading, setTemplateLibraryLoading] = useState(true);
   const [uploadingImage, setUploadingImage] = useState(false);
   const [questionLauncherOpen, setQuestionLauncherOpen] = useState(false);
   const [questionLauncherView, setQuestionLauncherView] = useState<"choice" | "templates" | "preview" | "layout">("choice");
@@ -1242,66 +1244,7 @@ export default function AssessmentEditorPage({
     };
   }, [dragState]);
 
-  async function loadAssessment(id: string) {
-    const user = await requireAccountRole("teacher");
-    if (!user) return;
-    setDraftOwnerId(user.id);
-
-    const { data: assessmentData, error: assessmentError } = await supabase
-      .from("assessments")
-      .select("*")
-      .eq("id", id)
-      .single();
-
-    if (assessmentError) {
-      alert(assessmentError.message);
-      setLoading(false);
-      return;
-    }
-
-    const { data: questionData, error: questionError } = await supabase
-      .from("questions")
-      .select("*")
-      .eq("assessment_id", id)
-      .in("question_type", ["multiple-choice", "drag-and-drop", "sort-into-groups", "dropdown", "fill-in-the-blank"])
-      .order("question_order", { ascending: true })
-      .order("id", { ascending: true });
-
-    if (questionError) {
-      alert(questionError.message);
-      setLoading(false);
-      return;
-    }
-
-    let sourceTemplates: QuestionTemplate[] = [];
-    try {
-      const token = getCachedAccessToken();
-      if (token) {
-        const response = await fetch("/api/question-templates", { headers: { Authorization: `Bearer ${token}` } });
-        const result = await response.json() as { templates?: QuestionTemplate[]; error?: string };
-        if (!response.ok) throw new Error(result.error || "Could not load built-in question templates.");
-        sourceTemplates = result.templates || [];
-      }
-    } catch (error) {
-      console.error("Could not load built-in question templates:", error);
-    }
-
-    const { data: referenceData, error: referenceError } = await supabase
-      .from("reference_builds")
-      .select("*")
-      .order("name", { ascending: true });
-
-    if (referenceError) {
-      console.error("Could not load reference library:", referenceError.message);
-    }
-
-    try {
-      const token = getCachedAccessToken();
-      if (token) {
-        const response = await fetch("/api/account-images/recover", { method: "POST", headers: { Authorization: `Bearer ${token}` } });
-        if (!response.ok) console.error("Could not recover past image uploads.");
-      }
-    } catch (error) { console.error("Could not recover past image uploads:", error); }
+  async function loadAccountImageLibrary() {
     const imageData: AccountImage[] = [];
     for (let offset = 0; ; offset += 500) {
       const { data, error } = await supabase.from("account_images").select("*")
@@ -1310,38 +1253,116 @@ export default function AssessmentEditorPage({
       imageData.push(...(data || []) as AccountImage[]);
       if (!data || data.length < 500) break;
     }
+    setAccountImages(imageData);
+    try {
+      const hydrated = await hydratePrivateImageUrls(supabase, { images: imageData });
+      setAccountImages(hydrated.images);
+    } catch (error) {
+      console.error("Could not authorize account images:", error);
+    }
+  }
 
-    const customTemplateRecords = (referenceData || []).filter((reference) => reference.name.startsWith(CUSTOM_TEMPLATE_PREFIX));
-    const regularReferences = (referenceData || []).filter((reference) => !reference.name.startsWith(CUSTOM_TEMPLATE_PREFIX));
+  async function loadEditorLibraries() {
+    setTemplateLibraryLoading(true);
+    const token = getCachedAccessToken();
+    const templateRequest = token
+      ? fetch("/api/question-templates", { headers: { Authorization: `Bearer ${token}` } })
+          .then(async (response) => {
+            const result = await response.json() as { templates?: QuestionTemplate[]; error?: string };
+            if (!response.ok) throw new Error(result.error || "Could not load built-in question templates.");
+            return result.templates || [];
+          })
+          .catch((error) => { console.error("Could not load built-in question templates:", error); return [] as QuestionTemplate[]; })
+      : Promise.resolve([] as QuestionTemplate[]);
+    const referenceRequest = supabase.from("reference_builds").select("*").order("name", { ascending: true });
+    const imageRequest = loadAccountImageLibrary();
+    const shouldRecoverImages = Boolean(token) && !imageRecoveryStartedRef.current;
+    if (shouldRecoverImages) imageRecoveryStartedRef.current = true;
+    const recoveryRequest = shouldRecoverImages
+      ? fetch("/api/account-images/recover", { method: "POST", headers: { Authorization: `Bearer ${token}` } })
+          .then((response) => {
+            if (!response.ok) {
+              console.error("Could not recover past image uploads.");
+              return false;
+            }
+            return true;
+          })
+          .catch((error) => { console.error("Could not recover past image uploads:", error); return false; })
+      : Promise.resolve(false);
+
+    const [sourceTemplates, referenceResult] = await Promise.all([templateRequest, referenceRequest]);
+    const referenceData = referenceResult.data || [];
+    if (referenceResult.error) console.error("Could not load reference library:", referenceResult.error.message);
+    const customTemplateRecords = referenceData.filter((reference) => reference.name.startsWith(CUSTOM_TEMPLATE_PREFIX));
+    const regularReferences = referenceData.filter((reference) => !reference.name.startsWith(CUSTOM_TEMPLATE_PREFIX));
     const storedCustomTemplates = customTemplateRecords.flatMap((reference) => {
       const stored = reference.table_data as unknown as { question?: Question };
       if (!stored?.question?.question_type || !stored.question.question_data) return [];
       return [{ id: reference.id, name: reference.name.slice(CUSTOM_TEMPLATE_PREFIX.length), kind: "custom" as const, question: asSingleViewQuestion(stored.question) }];
     });
-    sourceTemplates = sourceTemplates.map((template) => ({ ...template, question: asSingleViewQuestion(template.question) }));
+    const normalizedTemplates = sourceTemplates.map((template) => ({ ...template, question: asSingleViewQuestion(template.question) }));
+    setReferenceBuilds(regularReferences as ReferenceBuild[]);
+    setBuiltInTemplates(normalizedTemplates);
+    setCustomTemplates(storedCustomTemplates);
+    setTemplateLibraryLoading(false);
 
-    let hydrated = {
-      assessment: assessmentData as Assessment,
-      questions: (questionData || []) as Question[],
-      references: regularReferences as ReferenceBuild[],
-      images: (imageData || []) as AccountImage[],
-      builtInTemplates: sourceTemplates,
-      customTemplates: storedCustomTemplates,
-    };
     try {
-      hydrated = await hydratePrivateImageUrls(supabase, hydrated);
+      const hydrated = await hydratePrivateImageUrls(supabase, {
+        references: regularReferences as ReferenceBuild[],
+        builtInTemplates: normalizedTemplates,
+        customTemplates: storedCustomTemplates,
+      });
+      setReferenceBuilds(hydrated.references);
+      setBuiltInTemplates(hydrated.builtInTemplates);
+      setCustomTemplates(hydrated.customTemplates);
+    } catch (error) {
+      console.error("Could not authorize template images:", error);
+    }
+
+    await imageRequest;
+    const recoveredImages = await recoveryRequest;
+    // Recovery is a legacy/background repair. Refresh the library afterward
+    // without making assessment startup wait for a storage-wide scan.
+    if (recoveredImages) void loadAccountImageLibrary();
+  }
+
+  async function loadAssessment(id: string) {
+    const user = await requireAccountRole("teacher");
+    if (!user) return;
+    setDraftOwnerId(user.id);
+
+    const [assessmentResult, questionResult] = await Promise.all([
+      supabase.from("assessments").select("*").eq("id", id).single(),
+      supabase.from("questions").select("*").eq("assessment_id", id)
+        .in("question_type", ["multiple-choice", "drag-and-drop", "sort-into-groups", "dropdown", "fill-in-the-blank"])
+        .order("question_order", { ascending: true }).order("id", { ascending: true }),
+    ]);
+    if (assessmentResult.error || !assessmentResult.data) {
+      alert(assessmentResult.error?.message || "Assessment not found.");
+      setLoading(false);
+      return;
+    }
+    if (questionResult.error) {
+      alert(questionResult.error.message);
+      setLoading(false);
+      return;
+    }
+    const assessmentData = assessmentResult.data as Assessment;
+    const questionData = (questionResult.data || []) as Question[];
+    setAssessment(assessmentData);
+    setTitleDraft(assessmentData.title);
+    setQuestions(questionData);
+    setLoading(false);
+    void loadEditorLibraries();
+
+    // Image authorization improves previews but must not block the editor.
+    try {
+      const hydrated = await hydratePrivateImageUrls(supabase, { assessment: assessmentData, questions: questionData });
+      setAssessment(hydrated.assessment);
+      setQuestions(hydrated.questions);
     } catch (error) {
       console.error("Could not authorize assessment images:", error);
     }
-
-    setAssessment(hydrated.assessment);
-    setTitleDraft(assessmentData.title);
-    setQuestions(hydrated.questions);
-    setReferenceBuilds(hydrated.references);
-    setAccountImages(hydrated.images);
-    setBuiltInTemplates(hydrated.builtInTemplates);
-    setCustomTemplates(hydrated.customTemplates);
-    setLoading(false);
   }
 
   async function saveFormulaSheet(value: QuestionCanvasData | null) {
@@ -4090,18 +4111,23 @@ export default function AssessmentEditorPage({
                   </div>
 
                   <div role="tabpanel" className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                    {templateLibraryLoading && (
+                      <p className="col-span-full rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-6 py-10 text-center text-sm text-slate-500">
+                        Loading templates…
+                      </p>
+                    )}
                     {(templateQuestionType === "custom" ? customTemplates : builtInTemplates.filter((template) => template.question.question_type === templateQuestionType)).map((template) => (
-                      <button
-                        key={template.id}
-                        type="button"
-                        aria-label={`Use template ${template.name}`}
-                        onClick={() => chooseQuestionTemplate(template)}
-                        className="group aspect-[16/10] overflow-hidden rounded-2xl border border-slate-200 bg-slate-100 p-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-blue-400 hover:shadow-md"
-                      >
+                      <div key={template.id} className="group relative aspect-[16/10] overflow-hidden rounded-2xl border border-slate-200 bg-slate-100 p-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-blue-400 hover:shadow-md focus-within:border-blue-500 focus-within:ring-4 focus-within:ring-blue-100">
                         <TemplateQuestionThumbnail question={template.question} index={template.question.question_order - 1} />
-                      </button>
+                        <button
+                          type="button"
+                          aria-label={`Use template ${template.name}`}
+                          onClick={() => chooseQuestionTemplate(template)}
+                          className="absolute inset-0 z-10 rounded-2xl outline-none"
+                        />
+                      </div>
                     ))}
-                    {(templateQuestionType === "custom" ? customTemplates : builtInTemplates.filter((template) => template.question.question_type === templateQuestionType)).length === 0 && (
+                    {!templateLibraryLoading && (templateQuestionType === "custom" ? customTemplates : builtInTemplates.filter((template) => template.question.question_type === templateQuestionType)).length === 0 && (
                       <p className="col-span-full rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-6 py-10 text-center text-sm text-slate-500">
                         {templateQuestionType === "custom" ? "No custom templates yet. Save an existing question as a template to add one here." : "No templates are available for this question type yet."}
                       </p>

@@ -2,6 +2,7 @@ import { adminClient } from "@/lib/teacherBilling";
 
 const QUESTION_TYPES = new Set(["multiple-choice", "drag-and-drop", "sort-into-groups", "dropdown", "fill-in-the-blank"]);
 const TEMPLATE_QUESTION_ORDERS = [1, 2, 3, 4, 5, 7, 8, 11, 12, 13, 16, 18, 19, 21, 22];
+const SORT_INTO_GROUPS_TEMPLATE_QUESTION_ID = "f33a8b0e-c4cf-4b98-b6df-d860ec7b37d2";
 type BuiltInTemplateRow = {
   template_key: string;
   question_order: number;
@@ -45,6 +46,19 @@ export async function GET(request: Request) {
         .order("question_order");
       if (questionResult.error) throw questionResult.error;
       rows = (questionResult.data || []).map((row) => ({ ...row, template_key: "grade-9-math-practice-b" })) as BuiltInTemplateRow[];
+    }
+
+    // This template belongs to a separate assessment and was never part of
+    // the Grade 9 source snapshot. Keep it available while the protected
+    // template migration is being rolled out to existing databases.
+    if (!rows.some((row) => row.question_type === "sort-into-groups")) {
+      const sortTemplateResult = await admin.from("questions")
+        .select("question_order,question_type,prompt,question_data")
+        .eq("id", SORT_INTO_GROUPS_TEMPLATE_QUESTION_ID)
+        .maybeSingle();
+      if (!sortTemplateResult.error && sortTemplateResult.data?.question_type === "sort-into-groups") {
+        rows.push({ ...sortTemplateResult.data, template_key: "variation-sort-into-groups" } as BuiltInTemplateRow);
+      }
     }
 
     const templates = rows.flatMap((row) => QUESTION_TYPES.has(row.question_type) ? [{

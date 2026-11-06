@@ -18,6 +18,11 @@ create table if not exists public.default_assessment_template_questions (
   primary key (template_key, question_order)
 );
 
+alter table public.assessments add column if not exists template_key text;
+create unique index if not exists assessments_one_template_per_class
+on public.assessments(classroom_id, template_key)
+where template_key is not null;
+
 -- The original source assessment was deleted after copies had already been
 -- created. Snapshot the oldest complete surviving copy. These rows remain
 -- independent if every user-visible copy is later edited or deleted.
